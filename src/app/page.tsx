@@ -418,11 +418,6 @@ export default function HomePage() {
             </>
           )}
         </div>
-
-        {/* Footer Note */}
-        <p className="text-center text-sm text-gray-500 mt-6">
-          Data will be stored securely in Supabase.
-        </p>
       </div>
     </div>
   )

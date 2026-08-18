@@ -5,8 +5,8 @@ import './globals.css'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'Website Service Intake Form | AppsRow Solutions LLP',
-  description: 'Submit your website service requirements',
+  title: 'Appsrow Universal Discovery Questionnaire',
+  description: 'Tell Appsrow about your project. The form adapts to what you need.',
   icons: {
     icon: '/icon.svg',
   },
@@ -23,4 +23,3 @@ export default function RootLayout({
     </html>
   )
 }
-

@@ -943,6 +943,8 @@ function WorkspaceSettingsPage({ workspace, onSave }: { workspace: WorkspaceSett
   const [settingsTab, setSettingsTab] = useState<'workspace' | 'developer'>('workspace')
   const [jsonInput, setJsonInput] = useState('')
   const [jsonStatus, setJsonStatus] = useState('')
+  const [csvStatus, setCsvStatus] = useState('')
+  const [csvDragging, setCsvDragging] = useState(false)
 
   async function handleJsonImport() {
     if (!jsonInput.trim()) { setJsonStatus('Paste a JSON payload first.'); return }
@@ -952,14 +954,98 @@ function WorkspaceSettingsPage({ workspace, onSave }: { workspace: WorkspaceSett
       const res = await fetch('/api/adl/questionnaires', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...parsed, mode: 'blank' }),
+        body: JSON.stringify(parsed),
       })
       const data = await res.json() as { questionnaire?: { id: string; name: string }; error?: string }
       if (!res.ok) { setJsonStatus(data.error || 'Import failed.'); return }
-      setJsonStatus(`Imported "${data.questionnaire?.name}" successfully.`)
+      const qName = data.questionnaire?.name || 'Questionnaire'
+      setJsonStatus(`Successfully imported "${qName}".`)
       setJsonInput('')
     } catch {
       setJsonStatus('Invalid JSON — check syntax and try again.')
+    }
+  }
+
+  function handleJsonFile(file: File) {
+    const reader = new FileReader()
+    reader.onload = (e) => {
+      setJsonInput(e.target?.result as string || '')
+      setJsonStatus('')
+    }
+    reader.readAsText(file)
+  }
+
+  function parseCsvToJson(csvText: string): { questionnaire: Record<string, string>; sections: Record<string, unknown>[]; questions: Record<string, unknown>[] } | null {
+    const lines = csvText.trim().split('\n').map((l) => l.split(',').map((c) => c.trim().replace(/^"|"$/g, '')))
+    if (lines.length < 2) return null
+    const headers = lines[0].map((h) => h.toLowerCase().replace(/\s+/g, '_'))
+    const sectionIdx = headers.indexOf('section')
+    const questionIdx = headers.indexOf('question')
+    const typeIdx = headers.indexOf('type')
+    const requiredIdx = headers.indexOf('required')
+    const optionsIdx = headers.indexOf('options')
+    const helpIdx = headers.indexOf('help_text')
+    const placeholderIdx = headers.indexOf('placeholder')
+
+    if (questionIdx < 0) return null
+
+    const sectionMap: Record<string, { id: string; title: string; order: number }> = {}
+    const questions: Record<string, unknown>[] = []
+    let sectionOrder = 0
+    let questionOrder = 0
+
+    for (let i = 1; i < lines.length; i++) {
+      const row = lines[i]
+      if (!row[questionIdx]?.trim()) continue
+      const secTitle = sectionIdx >= 0 && row[sectionIdx] ? row[sectionIdx] : 'General'
+      const secKey = secTitle.toLowerCase()
+      if (!sectionMap[secKey]) {
+        sectionOrder++
+        sectionMap[secKey] = { id: `csv_sec_${sectionOrder}`, title: secTitle, order: sectionOrder }
+      }
+      questionOrder++
+      const opts = optionsIdx >= 0 && row[optionsIdx] ? row[optionsIdx].split('|').map((s) => s.trim()).filter(Boolean) : []
+      const rawType = typeIdx >= 0 && row[typeIdx] ? row[typeIdx].toLowerCase().replace(/\s+/g, '_') : 'short_text'
+      questions.push({
+        id: `csv_q_${questionOrder}`,
+        sectionId: sectionMap[secKey].id,
+        type: rawType,
+        question: row[questionIdx],
+        helpText: helpIdx >= 0 ? row[helpIdx] || '' : '',
+        placeholder: placeholderIdx >= 0 ? row[placeholderIdx] || '' : '',
+        required: requiredIdx >= 0 ? row[requiredIdx]?.toLowerCase() === 'true' || row[requiredIdx] === '1' : false,
+        active: true,
+        order: questionOrder,
+        options: opts,
+      })
+    }
+
+    return {
+      questionnaire: { name: 'Imported from CSV', slug: `csv-import-${Date.now().toString(36)}`, purpose: 'Imported from spreadsheet.' },
+      sections: Object.values(sectionMap),
+      questions,
+    }
+  }
+
+  async function handleCsvImport(file: File) {
+    setCsvStatus('')
+    const text = await file.text()
+    const payload = parseCsvToJson(text)
+    if (!payload || payload.questions.length === 0) {
+      setCsvStatus('Could not parse the file. Ensure it has at least a "question" column header.')
+      return
+    }
+    try {
+      const res = await fetch('/api/adl/questionnaires', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      const data = await res.json() as { questionnaire?: { id: string; name: string }; error?: string }
+      if (!res.ok) { setCsvStatus(data.error || 'Import failed.'); return }
+      setCsvStatus(`Successfully imported ${payload.questions.length} questions into "${data.questionnaire?.name}".`)
+    } catch {
+      setCsvStatus('Import failed — check your file and try again.')
     }
   }
 
@@ -990,37 +1076,75 @@ function WorkspaceSettingsPage({ workspace, onSave }: { workspace: WorkspaceSett
         {settingsTab === 'developer' && (
           <div className="border-t border-ink pt-6">
             <h2 className="text-[24px] font-semibold leading-tight tracking-tight md:text-[30px]">Developer & JSON</h2>
-            <p className="mb-8 text-sm text-muted">Import questionnaires from a JSON payload or use these tools for programmatic access.</p>
+            <p className="mb-8 text-sm text-muted">Import questionnaires from JSON or spreadsheets, or use the API for programmatic access.</p>
 
-            <div className="mb-8">
-              <h3 className="mb-4 text-lg font-semibold">Import questionnaire from JSON</h3>
+            {/* JSON Import */}
+            <div className="mb-10">
+              <h3 className="mb-2 text-lg font-semibold">Import from JSON</h3>
               <p className="mb-4 text-[13px] text-muted">
-                Paste a JSON object with <code className="mono text-ink">name</code>, <code className="mono text-ink">slug</code>, and <code className="mono text-ink">purpose</code> fields. The questionnaire will be created as a blank draft.
+                Paste the full Appsrow JSON format with <code className="mono text-ink">questionnaire</code>, <code className="mono text-ink">sections</code>, and <code className="mono text-ink">questions</code> arrays — including conditional logic, options, and roles.
+                Or upload a <code className="mono text-ink">.json</code> file.
               </p>
               <textarea
                 className="textarea mono"
-                style={{ minHeight: 200, fontSize: 13 }}
-                placeholder={'{\n  "name": "Client Onboarding",\n  "slug": "client-onboarding",\n  "purpose": "Collect onboarding details"\n}'}
+                style={{ minHeight: 220, fontSize: 12 }}
+                placeholder={'{\n  "questionnaire": { "name": "...", "slug": "...", "purpose": "..." },\n  "sections": [ { "id": "about", "title": "About you", "order": 1 } ],\n  "questions": [\n    { "id": "q1", "sectionId": "about", "type": "email", "question": "Your email?", ... }\n  ]\n}'}
                 value={jsonInput}
                 onChange={(e) => { setJsonInput(e.target.value); setJsonStatus('') }}
               />
               {jsonStatus && (
-                <div className={`mt-2 border-l-[3px] p-3 text-sm ${jsonStatus.includes('success') ? 'border-green-600 bg-green-50 text-green-800' : 'border-red bg-[#FFF7F7] text-red'}`}>
+                <div className={`mt-2 border-l-[3px] p-3 text-sm ${jsonStatus.includes('Successfully') ? 'border-green-600 bg-green-50 text-green-800' : 'border-red bg-[#FFF7F7] text-red'}`}>
                   {jsonStatus}
                 </div>
               )}
-              <div className="mt-4 flex gap-2">
+              <div className="mt-4 flex flex-wrap items-center gap-2">
                 <button className="btn btn-red" onClick={handleJsonImport}>Import JSON</button>
+                <label className="btn btn-ghost cursor-pointer">
+                  Upload .json file
+                  <input type="file" accept=".json,application/json" className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleJsonFile(e.target.files[0]) }} />
+                </label>
                 <button className="btn btn-ghost" onClick={() => { setJsonInput(''); setJsonStatus('') }}>Clear</button>
               </div>
             </div>
 
+            {/* CSV / Sheet Upload */}
+            <div className="mb-10 border-t border-line pt-8">
+              <h3 className="mb-2 text-lg font-semibold">Import from spreadsheet</h3>
+              <p className="mb-4 text-[13px] text-muted">
+                Upload a <code className="mono text-ink">.csv</code> file. Required column: <code className="mono text-ink">question</code>.
+                Optional columns: <code className="mono text-ink">section</code>, <code className="mono text-ink">type</code>, <code className="mono text-ink">required</code>, <code className="mono text-ink">options</code> (pipe-separated), <code className="mono text-ink">help_text</code>, <code className="mono text-ink">placeholder</code>.
+              </p>
+              <div
+                className={`flex min-h-[160px] flex-col items-center justify-center gap-3 border-2 border-dashed p-8 text-center transition ${csvDragging ? 'border-red bg-[#FFF7F7]' : 'border-line-strong bg-canvas'}`}
+                onDragOver={(e) => { e.preventDefault(); setCsvDragging(true) }}
+                onDragLeave={() => setCsvDragging(false)}
+                onDrop={(e) => { e.preventDefault(); setCsvDragging(false); const f = e.dataTransfer.files[0]; if (f) handleCsvImport(f) }}
+              >
+                <div className="text-3xl">📄</div>
+                <p className="text-sm text-muted">Drag and drop a .csv file here</p>
+                <label className="btn btn-ghost btn-sm cursor-pointer">
+                  Or choose file
+                  <input type="file" accept=".csv,text/csv" className="hidden" onChange={(e) => { if (e.target.files?.[0]) handleCsvImport(e.target.files[0]) }} />
+                </label>
+              </div>
+              {csvStatus && (
+                <div className={`mt-2 border-l-[3px] p-3 text-sm ${csvStatus.includes('Successfully') ? 'border-green-600 bg-green-50 text-green-800' : 'border-red bg-[#FFF7F7] text-red'}`}>
+                  {csvStatus}
+                </div>
+              )}
+              <div className="mt-4 border border-line bg-white p-4">
+                <div className="mb-2 text-[13px] font-semibold">Example CSV format</div>
+                <pre className="mono overflow-auto text-[11px] text-muted">section,question,type,required,options,help_text,placeholder{'\n'}About you,What is your email?,email,true,,,you@company.com{'\n'}About you,Your full name?,short_text,true,,,Your name{'\n'}Project,What do you need?,single_select,true,Design|Development|Both,,{'\n'}Project,Describe the goal,long_text,false,,,Tell us more...</pre>
+              </div>
+            </div>
+
+            {/* API Reference */}
             <div className="border-t border-line pt-8">
               <h3 className="mb-4 text-lg font-semibold">API endpoints</h3>
               <div className="grid gap-4">
                 {[
                   ['GET', '/api/adl/questionnaires', 'List all questionnaires'],
-                  ['POST', '/api/adl/questionnaires', 'Create a questionnaire'],
+                  ['POST', '/api/adl/questionnaires', 'Create a questionnaire (JSON import, blank, or universal clone)'],
                   ['GET', '/api/adl/questionnaires/:id', 'Get a single questionnaire with sections and questions'],
                   ['PUT', '/api/adl/questionnaires/:id', 'Update questionnaire settings, theme, or status'],
                   ['DELETE', '/api/adl/questionnaires/:id', 'Delete a non-default questionnaire'],

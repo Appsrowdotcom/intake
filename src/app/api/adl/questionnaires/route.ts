@@ -25,9 +25,10 @@ export async function POST(request: Request) {
     if (!body.ok) return NextResponse.json({ error: body.error }, { status: body.status })
 
     const data = body.value as Record<string, unknown>
-    const name = typeof data.name === 'string' ? data.name.trim() : ''
-    const slug = typeof data.slug === 'string' ? data.slug.trim() : ''
-    const purpose = typeof data.purpose === 'string' ? data.purpose.trim() : ''
+    const nested = data.questionnaire as Record<string, unknown> | undefined
+    const name = (typeof data.name === 'string' ? data.name.trim() : '') || (nested && typeof nested.name === 'string' ? nested.name.trim() : '')
+    const slug = (typeof data.slug === 'string' ? data.slug.trim() : '') || (nested && typeof nested.slug === 'string' ? nested.slug.trim() : '')
+    const purpose = (typeof data.purpose === 'string' ? data.purpose.trim() : '') || (nested && typeof nested.purpose === 'string' ? nested.purpose.trim() : '')
 
     if (!name) return NextResponse.json({ error: 'Name is required.' }, { status: 400 })
     if (!isValidSlug(slug)) return NextResponse.json({ error: 'Use a valid slug.' }, { status: 400 })
@@ -38,9 +39,45 @@ export async function POST(request: Request) {
     }
 
     let sections: SectionData[] = []
-    const mode = data.mode === 'blank' ? 'blank' : 'universal'
+    const mode = typeof data.mode === 'string' ? data.mode : 'universal'
 
-    if (mode === 'universal') {
+    // Full JSON import: { questionnaire: {...}, sections: [...], questions: [...] }
+    const jsonQ = data.questionnaire as Record<string, unknown> | undefined
+    const jsonSections = Array.isArray(data.sections) ? data.sections : null
+    const jsonQuestions = Array.isArray(data.questions) ? data.questions : null
+
+    if (jsonSections && jsonQuestions) {
+      const sectionMap: Record<string, SectionData> = {}
+      for (const s of jsonSections) {
+        const sec: SectionData = {
+          id: String(s.id || uid('section')),
+          title: String(s.title || 'Untitled'),
+          order: Number(s.order) || 0,
+          questions: [],
+        }
+        sectionMap[sec.id] = sec
+      }
+      for (const q of jsonQuestions) {
+        const sid = String(q.sectionId || '')
+        const sec = sectionMap[sid]
+        if (!sec) continue
+        sec.questions.push({
+          id: String(q.id || uid('q')),
+          sectionId: sid,
+          type: String(q.type || 'short_text') as SectionData['questions'][0]['type'],
+          question: String(q.question || ''),
+          helpText: String(q.helpText ?? ''),
+          placeholder: String(q.placeholder ?? ''),
+          required: !!q.required,
+          active: q.active !== false,
+          options: Array.isArray(q.options) ? q.options.map(String) : [],
+          logic: q.logic && typeof q.logic === 'object' ? q.logic : undefined,
+          role: typeof q.role === 'string' ? q.role as SectionData['questions'][0]['role'] : undefined,
+          order: Number(q.order) || 0,
+        })
+      }
+      sections = Object.values(sectionMap).sort((a, b) => a.order - b.order)
+    } else if (mode === 'universal') {
       const universal = existing.find((q) => q.isDefault)
       if (universal) {
         const idMap: Record<string, string> = {}
@@ -70,7 +107,7 @@ export async function POST(request: Request) {
       }
     }
 
-    if (sections.length === 0 && mode === 'blank') {
+    if (sections.length === 0 && (mode === 'blank' || !jsonSections)) {
       sections = [{ id: uid('section'), title: 'First section', order: 1, questions: [] }]
     }
 

@@ -1,14 +1,18 @@
 import { neon, NeonQueryFunction } from '@neondatabase/serverless'
-import {
-  createQuestionId,
-  parseOptions,
-  parseShowRule,
-  type Question,
-  type QuestionRole,
-  type QuestionType,
-  type ShowRule,
+import type {
+  QuestionnaireData,
+  SectionData,
+  QuestionData,
+  ThemeSettings,
+  ResponseData,
+  WorkspaceSettings,
+  QuestionType,
+  Logic,
+  QuestionRole,
+  QuestionnaireStatus,
+  ThemePreset,
+  ShowCondition,
 } from './questions'
-import { SEED_QUESTIONS } from './seedQuestions'
 
 let sql: NeonQueryFunction<false, false> | null = null
 
@@ -22,272 +26,521 @@ function normalizeDatabaseUrl(value: string): string {
 
 export function getDb() {
   if (sql) return sql
-
   const databaseUrl = process.env.DATABASE_URL
-  if (!databaseUrl) {
-    throw new Error('Missing DATABASE_URL. Add it to .env.local.')
-  }
-
+  if (!databaseUrl) throw new Error('Missing DATABASE_URL.')
   sql = neon(normalizeDatabaseUrl(databaseUrl))
   return sql
 }
 
-export type SubmissionListItem = {
-  id: string
-  created_at: string
-  full_name: string
-  email: string
-  company_name: string
-  relationship: string | null
-  project_type: string | null
+function isSafeId(id: string): boolean {
+  return /^[A-Za-z0-9_-]{1,80}$/.test(id)
 }
 
-export type Submission = SubmissionListItem & {
-  answers: Record<string, string | string[]>
+// --- Workspace ---
+
+export async function getWorkspace(): Promise<WorkspaceSettings> {
+  const db = getDb()
+  const rows = await db`SELECT name, domain, default_theme FROM workspace WHERE id = 1`
+  if (!rows[0]) return { name: 'Appsrow Discovery', domain: 'discover.appsrow.com', defaultTheme: 'light' }
+  const r = rows[0] as Record<string, unknown>
+  return {
+    name: String(r.name),
+    domain: String(r.domain),
+    defaultTheme: (r.default_theme as ThemePreset) || 'light',
+  }
+}
+
+export async function updateWorkspace(input: WorkspaceSettings): Promise<WorkspaceSettings> {
+  const db = getDb()
+  await db`
+    UPDATE workspace SET name = ${input.name}, domain = ${input.domain}, default_theme = ${input.defaultTheme}
+    WHERE id = 1
+  `
+  return input
+}
+
+// --- Questionnaires ---
+
+function mapTheme(row: Record<string, unknown>): ThemeSettings {
+  return {
+    preset: (row.theme_preset as ThemePreset) || 'light',
+    heading: (row.theme_heading as 'large' | 'compact') || 'large',
+    width: (row.theme_width as 'wide' | 'focused') || 'wide',
+    progress: (row.theme_progress as 'fraction' | 'minimal') || 'fraction',
+    showLogo: row.theme_show_logo !== false,
+  }
+}
+
+export async function listQuestionnaires(): Promise<QuestionnaireData[]> {
+  const db = getDb()
+  const qRows = await db`SELECT * FROM questionnaires ORDER BY is_default DESC, created_at ASC`
+  const sRows = await db`SELECT * FROM sections ORDER BY sort_order ASC`
+  const questionRows = await db`SELECT * FROM questions ORDER BY sort_order ASC`
+
+  const sectionsByQid = new Map<string, SectionData[]>()
+  for (const s of sRows as Record<string, unknown>[]) {
+    const qid = String(s.questionnaire_id)
+    if (!sectionsByQid.has(qid)) sectionsByQid.set(qid, [])
+    sectionsByQid.get(qid)!.push({
+      id: String(s.id),
+      title: String(s.title),
+      order: Number(s.sort_order),
+      questions: [],
+    })
+  }
+
+  const questionsBySid = new Map<string, QuestionData[]>()
+  for (const q of questionRows as Record<string, unknown>[]) {
+    const sid = String(q.section_id)
+    if (!questionsBySid.has(sid)) questionsBySid.set(sid, [])
+    questionsBySid.get(sid)!.push(mapQuestion(q))
+  }
+
+  for (const sections of sectionsByQid.values()) {
+    for (const s of sections) {
+      s.questions = questionsBySid.get(s.id) || []
+    }
+  }
+
+  return (qRows as Record<string, unknown>[]).map((r) => ({
+    id: String(r.id),
+    isDefault: Boolean(r.is_default),
+    name: String(r.name),
+    slug: String(r.slug),
+    purpose: String(r.purpose),
+    status: (r.status as QuestionnaireStatus) || 'draft',
+    createdAt: String(r.created_at).slice(0, 10),
+    updatedAt: String(r.updated_at).slice(0, 10),
+    theme: mapTheme(r),
+    sections: sectionsByQid.get(String(r.id)) || [],
+  }))
+}
+
+export async function getQuestionnaire(id: string): Promise<QuestionnaireData | null> {
+  if (!isSafeId(id)) return null
+  const all = await listQuestionnaires()
+  return all.find((q) => q.id === id) || null
+}
+
+export async function getQuestionnaireBySlug(slug: string): Promise<QuestionnaireData | null> {
+  const all = await listQuestionnaires()
+  return all.find((q) => q.slug === slug) || null
+}
+
+export async function createQuestionnaire(input: {
+  name: string
+  slug: string
+  purpose: string
+  status?: QuestionnaireStatus
+  isDefault?: boolean
+  theme?: Partial<ThemeSettings>
+  sections?: SectionData[]
+}): Promise<QuestionnaireData> {
+  const db = getDb()
+  const id = `qnaire_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+  const theme: ThemeSettings = {
+    preset: input.theme?.preset || 'light',
+    heading: input.theme?.heading || 'large',
+    width: input.theme?.width || 'wide',
+    progress: input.theme?.progress || 'fraction',
+    showLogo: input.theme?.showLogo !== false,
+  }
+
+  await db.query(
+    `INSERT INTO questionnaires (id, is_default, name, slug, purpose, status, theme_preset, theme_heading, theme_width, theme_progress, theme_show_logo)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [id, Boolean(input.isDefault), input.name, input.slug, input.purpose, input.status || 'draft',
+      theme.preset, theme.heading, theme.width, theme.progress, theme.showLogo]
+  )
+
+  const sections = input.sections || []
+  for (let si = 0; si < sections.length; si++) {
+    const s = sections[si]
+    await db.query(
+      `INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES ($1,$2,$3,$4)`,
+      [s.id, id, s.title, si + 1]
+    )
+    for (let qi = 0; qi < s.questions.length; qi++) {
+      const q = s.questions[qi]
+      await db.query(
+        `INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)`,
+        [q.id, s.id, qi + 1, q.question, q.helpText || '', q.placeholder || '', q.type,
+          q.required, q.active !== false, JSON.stringify(q.options || []),
+          q.logic ? JSON.stringify(q.logic) : null, q.role || null]
+      )
+    }
+  }
+
+  return (await getQuestionnaire(id))!
+}
+
+export async function updateQuestionnaire(id: string, input: {
+  name?: string
+  slug?: string
+  purpose?: string
+  status?: QuestionnaireStatus
+  theme?: Partial<ThemeSettings>
+}): Promise<QuestionnaireData | null> {
+  if (!isSafeId(id)) return null
+  const db = getDb()
+  const existing = await getQuestionnaire(id)
+  if (!existing) return null
+
+  const name = input.name ?? existing.name
+  const slug = input.slug ?? existing.slug
+  const purpose = input.purpose ?? existing.purpose
+  const status = input.status ?? existing.status
+  const theme = { ...existing.theme, ...input.theme }
+
+  await db.query(
+    `UPDATE questionnaires SET name=$2, slug=$3, purpose=$4, status=$5,
+     theme_preset=$6, theme_heading=$7, theme_width=$8, theme_progress=$9, theme_show_logo=$10,
+     updated_at=now() WHERE id=$1`,
+    [id, name, slug, purpose, status, theme.preset, theme.heading, theme.width, theme.progress, theme.showLogo]
+  )
+
+  return getQuestionnaire(id)
+}
+
+export async function deleteQuestionnaire(id: string): Promise<boolean> {
+  if (!isSafeId(id)) return false
+  const db = getDb()
+  const result = await db`DELETE FROM questionnaires WHERE id = ${id} AND is_default = false`
+  return true
+}
+
+// --- Sections ---
+
+export async function addSection(questionnaireId: string, title: string): Promise<SectionData> {
+  const db = getDb()
+  const id = `section_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+  const maxRows = await db`SELECT COALESCE(MAX(sort_order),0)::int AS max FROM sections WHERE questionnaire_id = ${questionnaireId}`
+  const order = Number(maxRows[0]?.max ?? 0) + 1
+  await db.query(
+    `INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES ($1,$2,$3,$4)`,
+    [id, questionnaireId, title, order]
+  )
+  await db`UPDATE questionnaires SET updated_at = now() WHERE id = ${questionnaireId}`
+  return { id, title, order, questions: [] }
+}
+
+// --- Questions ---
+
+function mapQuestion(row: Record<string, unknown>): QuestionData {
+  let options: string[] = []
+  if (Array.isArray(row.options)) {
+    options = row.options.map((o: unknown) => typeof o === 'string' ? o : (o && typeof o === 'object' && 'label' in o ? String((o as {label: string}).label) : String(o)))
+  } else if (typeof row.options === 'string') {
+    try { options = JSON.parse(row.options) } catch { /* empty */ }
+  }
+
+  let logic: Logic | undefined
+  const rawLogic = row.logic
+  if (rawLogic && typeof rawLogic === 'object' && !Array.isArray(rawLogic)) {
+    const parsed = rawLogic as { showWhen?: { match?: string; conditions?: unknown[] } }
+    if (parsed.showWhen?.conditions?.length) {
+      logic = { showWhen: { match: parsed.showWhen.match === 'all' ? 'all' : 'any', conditions: (parsed.showWhen.conditions as ShowCondition[]).filter(c => c && c.questionId) } }
+    }
+  }
+
+  return {
+    id: String(row.id),
+    sectionId: String(row.section_id),
+    type: row.type as QuestionType,
+    question: String(row.question),
+    helpText: String(row.help_text ?? ''),
+    placeholder: String(row.placeholder ?? ''),
+    required: Boolean(row.required),
+    active: row.active !== false,
+    options,
+    logic,
+    role: (row.role as QuestionRole | null) || undefined,
+    order: Number(row.sort_order),
+  }
+}
+
+export async function addQuestion(sectionId: string, data: Partial<QuestionData>): Promise<QuestionData> {
+  const db = getDb()
+  const id = data.id || `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+  const maxRows = await db`SELECT COALESCE(MAX(sort_order),0)::int AS max FROM questions WHERE section_id = ${sectionId}`
+  const order = Number(maxRows[0]?.max ?? 0) + 1
+
+  await db.query(
+    `INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)`,
+    [id, sectionId, order, data.question || 'Untitled question', data.helpText || '', data.placeholder || '',
+      data.type || 'short_text', data.required ?? false, data.active !== false,
+      JSON.stringify(data.options || []), data.logic ? JSON.stringify(data.logic) : null, data.role || null]
+  )
+
+  // update questionnaire timestamp
+  const sectionRows = await db`SELECT questionnaire_id FROM sections WHERE id = ${sectionId} LIMIT 1`
+  if (sectionRows[0]) {
+    await db`UPDATE questionnaires SET updated_at = now() WHERE id = ${String(sectionRows[0].questionnaire_id)}`
+  }
+
+  return { id, sectionId, type: (data.type || 'short_text') as QuestionType, question: data.question || 'Untitled question', helpText: data.helpText || '', placeholder: data.placeholder || '', required: data.required ?? false, active: data.active !== false, options: data.options || [], logic: data.logic, role: data.role, order }
+}
+
+export async function updateQuestion(id: string, data: Partial<QuestionData>): Promise<QuestionData | null> {
+  if (!isSafeId(id)) return null
+  const db = getDb()
+  const existing = await db`SELECT * FROM questions WHERE id = ${id} LIMIT 1`
+  if (!existing[0]) return null
+
+  const row = existing[0] as Record<string, unknown>
+  const q = mapQuestion(row)
+
+  const updated = {
+    question: data.question ?? q.question,
+    helpText: data.helpText ?? q.helpText,
+    placeholder: data.placeholder ?? q.placeholder,
+    type: data.type ?? q.type,
+    required: data.required ?? q.required,
+    active: data.active ?? q.active,
+    options: data.options ?? q.options,
+    logic: data.logic !== undefined ? data.logic : q.logic,
+    role: data.role !== undefined ? data.role : q.role,
+  }
+
+  await db.query(
+    `UPDATE questions SET question=$2, help_text=$3, placeholder=$4, type=$5, required=$6, active=$7,
+     options=$8::jsonb, logic=$9::jsonb, role=$10 WHERE id=$1`,
+    [id, updated.question, updated.helpText, updated.placeholder, updated.type, updated.required, updated.active,
+      JSON.stringify(updated.options), updated.logic ? JSON.stringify(updated.logic) : null, updated.role || null]
+  )
+
+  return { ...q, ...updated }
+}
+
+export async function deleteQuestion(id: string): Promise<boolean> {
+  if (!isSafeId(id)) return false
+  const db = getDb()
+  await db`DELETE FROM questions WHERE id = ${id}`
+  return true
+}
+
+// --- Submissions (Responses) ---
+
+export async function listResponses(questionnaireId?: string): Promise<ResponseData[]> {
+  const db = getDb()
+  let rows: Record<string, unknown>[]
+  if (questionnaireId) {
+    rows = await db`
+      SELECT s.*, q.name AS questionnaire_name
+      FROM submissions s LEFT JOIN questionnaires q ON q.id = s.questionnaire_id
+      WHERE s.questionnaire_id = ${questionnaireId}
+      ORDER BY s.created_at DESC
+    ` as Record<string, unknown>[]
+  } else {
+    rows = await db`
+      SELECT s.*, q.name AS questionnaire_name
+      FROM submissions s LEFT JOIN questionnaires q ON q.id = s.questionnaire_id
+      ORDER BY s.created_at DESC
+    ` as Record<string, unknown>[]
+  }
+  return rows.map(mapResponse)
+}
+
+function mapResponse(r: Record<string, unknown>): ResponseData {
+  const answers = Array.isArray(r.answers) ? r.answers as [string, string][] : Object.entries(r.answers || {}).map(([k, v]) => [k, String(v)] as [string, string])
+  return {
+    id: String(r.id),
+    questionnaireId: String(r.questionnaire_id),
+    questionnaireName: r.questionnaire_name ? String(r.questionnaire_name) : undefined,
+    name: String(r.name),
+    company: String(r.company),
+    email: String(r.email),
+    status: (r.status as 'new' | 'reviewed' | 'incomplete') || 'new',
+    clarity: Number(r.clarity) || 0,
+    submittedAt: formatTs(r.created_at),
+    projectType: String(r.project_type),
+    snapshot: (r.snapshot && typeof r.snapshot === 'object' ? r.snapshot : {}) as Record<string, string>,
+    ready: Array.isArray(r.ready) ? r.ready as string[] : [],
+    clarify: Array.isArray(r.clarify) ? r.clarify as string[] : [],
+    answers,
+  }
+}
+
+function formatTs(value: unknown): string {
+  if (!value) return ''
+  const d = new Date(String(value))
+  if (isNaN(d.getTime())) return String(value)
+  const now = new Date()
+  const diff = now.getTime() - d.getTime()
+  if (diff < 24 * 60 * 60 * 1000) return `Today, ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
+  if (diff < 48 * 60 * 60 * 1000) return `Yesterday, ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ', ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+}
+
+export async function getResponse(id: string): Promise<ResponseData | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null
+  const db = getDb()
+  const rows = await db`
+    SELECT s.*, q.name AS questionnaire_name
+    FROM submissions s JOIN questionnaires q ON q.id = s.questionnaire_id
+    WHERE s.id = ${id} LIMIT 1
+  ` as Record<string, unknown>[]
+  if (!rows[0]) return null
+  return mapResponse(rows[0])
 }
 
 export async function insertSubmission(input: {
-  fullName: string
+  questionnaireId: string
+  name: string
   email: string
-  companyName: string
-  relationship: string | null
-  projectType: string | null
-  answers: Record<string, string | string[]>
+  company: string
+  projectType: string
+  answers: Record<string, unknown>
+  snapshot?: Record<string, string>
+  ready?: string[]
+  clarify?: string[]
+  clarity?: number
 }): Promise<{ id: string }> {
   const db = getDb()
   const rows = await db.query(
-    `INSERT INTO submissions (full_name, email, company_name, relationship, project_type, answers)
-     VALUES ($1, $2, $3, $4, $5, $6::jsonb)
-     RETURNING id`,
-    [
-      input.fullName,
-      input.email,
-      input.companyName,
-      input.relationship,
-      input.projectType,
-      JSON.stringify(input.answers),
-    ]
+    `INSERT INTO submissions (questionnaire_id, name, email, company, project_type, answers, snapshot, ready, clarify, clarity)
+     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10) RETURNING id`,
+    [input.questionnaireId, input.name, input.email, input.company, input.projectType,
+      JSON.stringify(input.answers), JSON.stringify(input.snapshot || {}),
+      JSON.stringify(input.ready || []), JSON.stringify(input.clarify || []), input.clarity || 0]
   )
   return { id: String(rows[0].id) }
 }
 
-export async function listSubmissions(): Promise<SubmissionListItem[]> {
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export async function updateResponseStatus(id: string, status: 'new' | 'reviewed'): Promise<boolean> {
+  if (!UUID_RE.test(id)) return false
   const db = getDb()
-  const rows = await db`
-    SELECT id, created_at, full_name, email, company_name, relationship, project_type
-    FROM submissions
-    ORDER BY created_at DESC
+  await db`UPDATE submissions SET status = ${status} WHERE id = ${id}`
+  return true
+}
+
+// --- Seed ---
+
+export async function ensureSeeded(): Promise<void> {
+  const db = getDb()
+  await runMigrations(db)
+  const countRows = await db`SELECT COUNT(*)::int AS count FROM questionnaires`
+  if (Number(countRows[0]?.count ?? 0) > 0) return
+  await seedUniversalQuestionnaire()
+}
+
+async function runMigrations(db: NeonQueryFunction<false, false>): Promise<void> {
+  await db`
+    CREATE TABLE IF NOT EXISTS questionnaires (
+      id TEXT PRIMARY KEY,
+      is_default BOOLEAN NOT NULL DEFAULT false,
+      name TEXT NOT NULL,
+      slug TEXT NOT NULL UNIQUE,
+      purpose TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      theme_preset TEXT NOT NULL DEFAULT 'light',
+      theme_heading TEXT NOT NULL DEFAULT 'large',
+      theme_width TEXT NOT NULL DEFAULT 'wide',
+      theme_progress TEXT NOT NULL DEFAULT 'fraction',
+      theme_show_logo BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
   `
-  return rows as SubmissionListItem[]
-}
-
-export async function getSubmission(id: string): Promise<Submission | null> {
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
-    return null
-  }
-  const db = getDb()
-  const rows = await db`
-    SELECT id, created_at, full_name, email, company_name, relationship, project_type, answers
-    FROM submissions
-    WHERE id = ${id}
-    LIMIT 1
+  await db`
+    CREATE TABLE IF NOT EXISTS sections (
+      id TEXT PRIMARY KEY,
+      questionnaire_id TEXT NOT NULL REFERENCES questionnaires(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      sort_order INT NOT NULL DEFAULT 0
+    )
   `
-  if (!rows[0]) return null
-  return rows[0] as Submission
-}
+  await db`
+    CREATE TABLE IF NOT EXISTS questions (
+      id TEXT PRIMARY KEY,
+      section_id TEXT NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
+      sort_order INT NOT NULL,
+      question TEXT NOT NULL,
+      help_text TEXT NOT NULL DEFAULT '',
+      placeholder TEXT NOT NULL DEFAULT '',
+      type TEXT NOT NULL,
+      required BOOLEAN NOT NULL DEFAULT false,
+      active BOOLEAN NOT NULL DEFAULT true,
+      options JSONB NOT NULL DEFAULT '[]',
+      logic JSONB,
+      role TEXT
+    )
+  `
+  await db`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      status TEXT NOT NULL DEFAULT 'new',
+      name TEXT NOT NULL DEFAULT '',
+      company TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      project_type TEXT NOT NULL DEFAULT '',
+      clarity INT NOT NULL DEFAULT 0,
+      answers JSONB NOT NULL DEFAULT '{}',
+      snapshot JSONB NOT NULL DEFAULT '{}',
+      ready JSONB NOT NULL DEFAULT '[]',
+      clarify JSONB NOT NULL DEFAULT '[]'
+    )
+  `
+  await db`
+    CREATE TABLE IF NOT EXISTS workspace (
+      id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      name TEXT NOT NULL DEFAULT 'Appsrow Discovery',
+      domain TEXT NOT NULL DEFAULT 'discover.appsrow.com',
+      default_theme TEXT NOT NULL DEFAULT 'light'
+    )
+  `
+  await db`INSERT INTO workspace (id) VALUES (1) ON CONFLICT DO NOTHING`
 
-function asBoolean(value: unknown, fallback = true): boolean {
-  if (value === false || value === 0 || value === 'false' || value === 'f') return false
-  if (value === true || value === 1 || value === 'true' || value === 't') return true
-  return fallback
-}
-
-function mapQuestionRow(row: Record<string, unknown>): Question {
-  return {
-    id: String(row.id),
-    sortOrder: Number(row.sort_order),
-    kicker: String(row.kicker ?? ''),
-    title: String(row.title),
-    description: row.description == null ? null : String(row.description),
-    placeholder: row.placeholder == null ? null : String(row.placeholder),
-    type: row.type as QuestionType,
-    required: asBoolean(row.required, false),
-    options: parseOptions(row.options),
-    showRule: parseShowRule(row.show_rule),
-    role: (row.role as QuestionRole | null) || null,
-    isActive: asBoolean(row.is_active, true),
-  }
-}
-
-export async function ensureQuestionsSeeded(): Promise<void> {
-  const db = getDb()
-  const countRows = await db`SELECT COUNT(*)::int AS count FROM questions`
-  const count = Number(countRows[0]?.count ?? 0)
-  if (count > 0) return
-
-  for (const question of SEED_QUESTIONS) {
-    await insertQuestionRow(question)
-  }
-}
-
-async function insertQuestionRow(question: Question): Promise<void> {
-  const db = getDb()
-  await db.query(
-    `INSERT INTO questions (
-      id, sort_order, kicker, title, description, placeholder, type, required, options, show_rule, role, is_active
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12)`,
-    [
-      question.id,
-      question.sortOrder,
-      question.kicker,
-      question.title,
-      question.description,
-      question.placeholder,
-      question.type,
-      question.required,
-      JSON.stringify(question.options),
-      question.showRule ? JSON.stringify(question.showRule) : null,
-      question.role,
-      question.isActive,
-    ]
-  )
-}
-
-export async function listQuestions(activeOnly = false): Promise<Question[]> {
-  await ensureQuestionsSeeded()
-  const db = getDb()
-  const rows = activeOnly
-    ? await db`SELECT * FROM questions WHERE is_active = true ORDER BY sort_order ASC`
-    : await db`SELECT * FROM questions ORDER BY sort_order ASC`
-  return (rows as Record<string, unknown>[]).map(mapQuestionRow)
-}
-
-export type QuestionInput = {
-  kicker: string
-  title: string
-  description: string | null
-  placeholder: string | null
-  type: QuestionType
-  required: boolean
-  options: string[]
-  showRule: ShowRule | null
-  role: QuestionRole | null
-  isActive: boolean
-}
-
-async function clearRole(role: QuestionRole | null, exceptId?: string): Promise<void> {
-  if (!role) return
-  const db = getDb()
-  if (exceptId) {
-    await db`UPDATE questions SET role = NULL WHERE role = ${role} AND id <> ${exceptId}`
-    return
-  }
-  await db`UPDATE questions SET role = NULL WHERE role = ${role}`
-}
-
-export async function createQuestion(input: QuestionInput, id?: string): Promise<Question> {
-  await ensureQuestionsSeeded()
-  const db = getDb()
-  const maxRows = await db`SELECT COALESCE(MAX(sort_order), 0)::int AS max FROM questions`
-  const sortOrder = Number(maxRows[0]?.max ?? 0) + 1
-  const question: Question = {
-    id: id || createQuestionId(),
-    sortOrder,
-    ...input,
-  }
-  await clearRole(question.role)
-  await insertQuestionRow(question)
-  return question
-}
-
-function isSafeQuestionId(id: string): boolean {
-  return /^[A-Za-z0-9_-]{1,64}$/.test(id)
-}
-
-export async function updateQuestion(id: string, input: QuestionInput): Promise<Question | null> {
-  if (!isSafeQuestionId(id)) return null
-  const db = getDb()
-  const existing = await db`SELECT sort_order FROM questions WHERE id = ${id} LIMIT 1`
-  if (!existing[0]) return null
-  await clearRole(input.role, id)
-  await db.query(
-    `UPDATE questions SET
-      kicker = $2,
-      title = $3,
-      description = $4,
-      placeholder = $5,
-      type = $6,
-      required = $7,
-      options = $8::jsonb,
-      show_rule = $9::jsonb,
-      role = $10,
-      is_active = $11
-    WHERE id = $1`,
-    [
-      id,
-      input.kicker,
-      input.title,
-      input.description,
-      input.placeholder,
-      input.type,
-      input.required,
-      JSON.stringify(input.options),
-      input.showRule ? JSON.stringify(input.showRule) : null,
-      input.role,
-      input.isActive,
-    ]
-  )
-  const rows = await db`SELECT * FROM questions WHERE id = ${id} LIMIT 1`
-  return rows[0] ? mapQuestionRow(rows[0] as Record<string, unknown>) : null
-}
-
-export async function deleteQuestion(id: string): Promise<{ ok: true } | { ok: false; referencedBy: string[] }> {
-  if (!isSafeQuestionId(id)) return { ok: false, referencedBy: [] }
-  const questions = await listQuestions(false)
-  const referencedBy = questions
-    .filter((question) => question.id !== id)
-    .filter((question) => question.showRule?.conditions.some((condition) => condition.questionId === id))
-    .map((question) => question.id)
-
-  if (referencedBy.length > 0) {
-    return { ok: false, referencedBy }
+  // Add questionnaire_id column if missing (migration from older schema)
+  const colCheck = await db`
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'submissions' AND column_name = 'questionnaire_id'
+  `
+  if (!colCheck.length) {
+    await db`ALTER TABLE submissions ADD COLUMN questionnaire_id TEXT DEFAULT '' NOT NULL`
   }
 
-  const db = getDb()
-  await db`DELETE FROM questions WHERE id = ${id}`
-  return { ok: true }
+  // Ensure indexes exist
+  await db`CREATE INDEX IF NOT EXISTS sections_questionnaire_idx ON sections (questionnaire_id, sort_order)`
+  await db`CREATE INDEX IF NOT EXISTS questions_section_idx ON questions (section_id, sort_order)`
+  await db`CREATE INDEX IF NOT EXISTS submissions_questionnaire_idx ON submissions (questionnaire_id, created_at DESC)`
+  await db`CREATE INDEX IF NOT EXISTS submissions_created_at_idx ON submissions (created_at DESC)`
 }
 
-export async function reorderQuestions(ids: string[]): Promise<Question[]> {
-  const existing = await listQuestions(false)
-  const existingIds = new Set(existing.map((question) => question.id))
-  const unique = [...new Set(ids.filter(isSafeQuestionId))]
-  if (unique.length !== existing.length || unique.some((id) => !existingIds.has(id))) {
-    return existing
-  }
+async function seedUniversalQuestionnaire(): Promise<void> {
+  const sections: SectionData[] = [
+    { id: 'about', title: 'About you', order: 1, questions: [
+      { id: 'q_email', sectionId: 'about', type: 'email', question: 'What is your work email?', helpText: "We'll use this only for project communication.", placeholder: 'you@company.com', required: true, active: true, options: [], role: 'email', order: 1 },
+      { id: 'q_name', sectionId: 'about', type: 'short_text', question: 'What is your full name?', helpText: '', placeholder: 'Your name', required: true, active: true, options: [], role: 'full_name', order: 2 },
+      { id: 'q_company', sectionId: 'about', type: 'short_text', question: 'What is your company name?', helpText: '', placeholder: 'Company name', required: true, active: true, options: [], role: 'company', order: 3 },
+    ]},
+    { id: 'project', title: 'Project direction', order: 2, questions: [
+      { id: 'q_project_type', sectionId: 'project', type: 'single_select', question: 'What are you primarily looking for help with?', helpText: 'Choose the option closest to your current requirement.', placeholder: '', required: true, active: true, options: ['Website design + development', 'Webflow development', 'Website redesign', 'Migration to Webflow', 'SEO / AEO', 'Maintenance / support'], role: 'project_type', order: 1 },
+      { id: 'q_goal', sectionId: 'project', type: 'long_text', question: 'What is the main goal of this project?', helpText: 'Tell us what should change for the business once this project succeeds.', placeholder: 'Describe the outcome you want...', required: true, active: true, options: [], order: 2 },
+      { id: 'q_audience', sectionId: 'project', type: 'long_text', question: 'Who is the primary target audience?', helpText: 'Company type, role, customer segment and any useful context.', placeholder: 'Describe the audience...', required: true, active: true, options: [], order: 3 },
+      { id: 'q_geo', sectionId: 'project', type: 'long_text', question: 'Which geographies or markets matter most?', helpText: 'Countries, regions, cities or global markets.', placeholder: 'US, UK, Europe...', required: true, active: true, options: [], order: 4 },
+    ]},
+    { id: 'scope', title: 'Website scope', order: 3, questions: [
+      { id: 'q_sitemap', sectionId: 'scope', type: 'single_select', question: 'Is the sitemap ready?', helpText: 'If it is ready or mostly ready, we will ask for the file or link next.', placeholder: '', required: true, active: true, options: ['Yes', 'Mostly ready', 'No'], order: 1 },
+      { id: 'q_sitemap_link', sectionId: 'scope', type: 'file_url', question: 'Please share the sitemap.', helpText: 'Upload it or paste a link.', placeholder: 'https://...', required: true, active: true, options: [], logic: { showWhen: { match: 'any', conditions: [{ questionId: 'q_sitemap', operator: 'equals', value: 'Yes' }, { questionId: 'q_sitemap', operator: 'equals', value: 'Mostly ready' }] } }, order: 2 },
+    ]},
+    { id: 'design', title: 'Design readiness', order: 4, questions: [
+      { id: 'q_design_status', sectionId: 'design', type: 'single_select', question: 'What is the current design status?', helpText: '', placeholder: '', required: true, active: true, options: ['No designs yet', 'Partially ready', 'Finalized in Figma'], order: 1 },
+      { id: 'q_figma', sectionId: 'design', type: 'url', question: 'Please share the Figma/design link.', helpText: 'Share the latest design file your team wants us to review.', placeholder: 'https://figma.com/...', required: true, active: true, options: [], logic: { showWhen: { match: 'any', conditions: [{ questionId: 'q_design_status', operator: 'equals', value: 'Partially ready' }, { questionId: 'q_design_status', operator: 'equals', value: 'Finalized in Figma' }] } }, order: 2 },
+    ]},
+  ]
 
-  const db = getDb()
-  for (let index = 0; index < unique.length; index += 1) {
-    await db`UPDATE questions SET sort_order = ${index + 1} WHERE id = ${unique[index]}`
-  }
-  return listQuestions(false)
-}
-
-export async function duplicateQuestion(id: string): Promise<Question | null> {
-  if (!isSafeQuestionId(id)) return null
-  const questions = await listQuestions(false)
-  const source = questions.find((question) => question.id === id)
-  if (!source) return null
-  return createQuestion({
-    kicker: source.kicker,
-    title: `${source.title} (copy)`,
-    description: source.description,
-    placeholder: source.placeholder,
-    type: source.type,
-    required: source.required,
-    options: source.options,
-    showRule: source.showRule,
-    role: null,
-    isActive: source.isActive,
+  await createQuestionnaire({
+    name: 'Universal Discovery',
+    slug: 'appsrow',
+    purpose: 'The main Appsrow intake for incoming leads across design, Webflow, migration, SEO/AEO, maintenance, branding and agency partnerships.',
+    status: 'live',
+    isDefault: true,
+    sections,
   })
 }

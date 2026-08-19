@@ -1,24 +1,16 @@
-import {
-  Answers,
-  Question,
-  collectVisibleAnswers,
-  getRoleValue,
-  getString,
-  getVisibleQuestions,
-  isAnswered,
-} from './questions'
+import type { QuestionData, Answers } from './questions'
+import { getVisibleQuestions, isValueAnswered } from './questions'
 
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const MAX_ANSWER_CHARS = 4000
 const MAX_MULTI_OPTIONS = 40
 const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
 
-export type ValidationResult =
+type ValidationResult =
   | { ok: true; payload: Answers }
   | { ok: false; error: string }
 
-function sanitizeAnswers(questions: Question[], raw: Record<string, unknown>): Answers | null {
-  const allowed = new Set(questions.map((question) => question.id))
+function sanitizeAnswers(questions: QuestionData[], raw: Record<string, unknown>): Answers | null {
+  const allowed = new Set(questions.map((q) => q.id))
   const answers: Answers = {}
 
   for (const [key, value] of Object.entries(raw)) {
@@ -34,50 +26,23 @@ function sanitizeAnswers(questions: Question[], raw: Record<string, unknown>): A
       answers[key] = value
     }
   }
-
   return answers
 }
 
-export function validateSubmission(questions: Question[], raw: unknown): ValidationResult {
+export function validateSubmission(questions: QuestionData[], raw: unknown): ValidationResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, error: 'Answers are required.' }
+    return { ok: false, error: 'Invalid submission.' }
   }
 
   const answers = sanitizeAnswers(questions, raw as Record<string, unknown>)
-  if (!answers) {
-    return { ok: false, error: 'Answers are invalid.' }
-  }
+  if (!answers) return { ok: false, error: 'Answers are invalid.' }
 
   const visible = getVisibleQuestions(questions, answers)
-
-  for (const question of visible) {
-    if (question.required && !isAnswered(question, answers)) {
-      return { ok: false, error: `Please answer: ${question.title}` }
+  for (const q of visible) {
+    if (q.required && !isValueAnswered(answers[q.id])) {
+      return { ok: false, error: `"${q.question}" is required.` }
     }
   }
 
-  const payload = collectVisibleAnswers(questions, answers)
-
-  const emailQuestion = visible.find((question) => question.role === 'email' || question.type === 'email')
-  if (emailQuestion && isAnswered(emailQuestion, payload)) {
-    const email = getString(payload, emailQuestion.id).trim()
-    if (!EMAIL_PATTERN.test(email) || email.length > 254) {
-      return { ok: false, error: 'Please provide a valid work email.' }
-    }
-  }
-
-  const fullName = getRoleValue(questions, payload, 'full_name')
-  const email = getRoleValue(questions, payload, 'email')
-  const company = getRoleValue(questions, payload, 'company')
-  if (questions.some((question) => question.role === 'full_name') && !fullName) {
-    return { ok: false, error: 'Name is required.' }
-  }
-  if (questions.some((question) => question.role === 'email') && !email) {
-    return { ok: false, error: 'Email is required.' }
-  }
-  if (questions.some((question) => question.role === 'company') && !company) {
-    return { ok: false, error: 'Company is required.' }
-  }
-
-  return { ok: true, payload }
+  return { ok: true, payload: answers }
 }

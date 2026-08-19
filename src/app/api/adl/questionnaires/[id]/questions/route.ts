@@ -2,9 +2,10 @@ import { NextResponse } from 'next/server'
 import { addQuestion } from '@/lib/db'
 import { isAllowedOrigin, readJsonBody } from '@/lib/requestGuard'
 
-export async function POST(request: Request) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     if (!isAllowedOrigin(request)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 })
+    const { id: _questionnaireId } = await params
     const body = await readJsonBody(request)
     if (!body.ok) return NextResponse.json({ error: body.error }, { status: body.status })
     const data = body.value as Record<string, unknown>

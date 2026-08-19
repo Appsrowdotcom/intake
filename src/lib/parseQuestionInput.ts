@@ -1,36 +1,31 @@
-import {
-  parseShowRule,
-  type QuestionRole,
-  type QuestionType,
-} from './questions'
-import type { QuestionInput } from './db'
+import type { QuestionType, QuestionRole, QuestionData } from './questions'
+import { SUPPORTED_TYPES } from './questions'
 
-const TYPES: QuestionType[] = ['text', 'textarea', 'email', 'url', 'single', 'multi']
 const ROLES: QuestionRole[] = ['full_name', 'email', 'company', 'relationship', 'project_type']
 
 function clip(value: string, max: number): string {
   return value.slice(0, max)
 }
 
-export function parseQuestionInput(body: unknown): QuestionInput | { error: string } {
+export function parseQuestionInput(body: unknown): Partial<QuestionData> & { type: QuestionType; question: string } | { error: string } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return { error: 'Invalid question payload.' }
   }
 
   const data = body as Record<string, unknown>
   const type = data.type
-  if (typeof type !== 'string' || !TYPES.includes(type as QuestionType)) {
+  if (typeof type !== 'string' || !SUPPORTED_TYPES.includes(type as QuestionType)) {
     return { error: 'Choose a valid question type.' }
   }
 
-  const title = typeof data.title === 'string' ? data.title.trim() : ''
-  if (!title) return { error: 'Title is required.' }
-  if (title.length > 500) return { error: 'Title is too long.' }
+  const question = typeof data.question === 'string' ? data.question.trim() : ''
+  if (!question) return { error: 'Question text is required.' }
+  if (question.length > 500) return { error: 'Question text is too long.' }
 
   let role: QuestionRole | null = null
   if (data.role) {
     if (typeof data.role !== 'string' || !ROLES.includes(data.role as QuestionRole)) {
-      return { error: 'Choose a valid list-view role.' }
+      return { error: 'Choose a valid role.' }
     }
     role = data.role as QuestionRole
   }
@@ -44,27 +39,15 @@ export function parseQuestionInput(body: unknown): QuestionInput | { error: stri
         .map((item) => clip(item, 200))
     : []
 
-  const showRule = parseShowRule(data.showRule)
-  if (showRule && showRule.conditions.length > 12) {
-    return { error: 'Too many show/hide conditions.' }
-  }
-
   return {
-    kicker: typeof data.kicker === 'string' ? clip(data.kicker.trim(), 80) : '',
-    title,
-    description:
-      typeof data.description === 'string' && data.description.trim()
-        ? clip(data.description.trim(), 4000)
-        : null,
-    placeholder:
-      typeof data.placeholder === 'string' && data.placeholder.trim()
-        ? clip(data.placeholder.trim(), 400)
-        : null,
+    question,
+    helpText: typeof data.helpText === 'string' ? clip(data.helpText.trim(), 4000) : '',
+    placeholder: typeof data.placeholder === 'string' ? clip(data.placeholder.trim(), 400) : '',
     type: type as QuestionType,
     required: Boolean(data.required),
-    options: type === 'single' || type === 'multi' ? options : [],
-    showRule,
+    active: data.active !== false,
+    options: (type === 'single_select' || type === 'multi_select') ? options : [],
+    logic: data.logic as QuestionData['logic'],
     role,
-    isActive: data.isActive !== false,
   }
 }

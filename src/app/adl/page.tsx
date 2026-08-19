@@ -1,8 +1,6 @@
-import { BrandHeader } from '@/components/BrandHeader'
-import { AdlHeaderActions } from '@/components/AdlHeaderActions'
 import { AdlLoginForm } from '@/components/AdlLoginForm'
-import { AdlSubmissionList } from '@/components/AdlSubmissionList'
-import { listSubmissions } from '@/lib/db'
+import { AdminWorkspace } from '@/components/AdminWorkspace'
+import { listQuestionnaires, listResponses, getWorkspace, ensureSeeded } from '@/lib/db'
 import { isAdlAuthenticated } from '@/lib/adlSession'
 
 export const dynamic = 'force-dynamic'
@@ -12,23 +10,24 @@ export default async function AdlPage() {
 
   if (!authenticated) {
     return (
-      <div className="min-h-screen bg-paper text-ink">
-        <BrandHeader />
-        <main className="mx-auto w-[min(1220px,calc(100%-32px))] py-16">
-          <AdlLoginForm />
-        </main>
+      <div className="flex min-h-screen items-center justify-center bg-canvas">
+        <AdlLoginForm />
       </div>
     )
   }
 
-  const submissions = await listSubmissions()
+  await ensureSeeded()
+  const [questionnaires, responses, workspace] = await Promise.all([
+    listQuestionnaires(),
+    listResponses(),
+    getWorkspace(),
+  ])
 
   return (
-    <div className="min-h-screen bg-paper text-ink">
-      <BrandHeader right={<AdlHeaderActions />} />
-      <main className="mx-auto w-[min(1220px,calc(100%-32px))] py-10 pb-20">
-        <AdlSubmissionList submissions={submissions} />
-      </main>
-    </div>
+    <AdminWorkspace
+      initialQuestionnaires={questionnaires}
+      initialResponses={responses}
+      initialWorkspace={workspace}
+    />
   )
 }

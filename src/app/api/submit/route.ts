@@ -1,15 +1,13 @@
 import { NextResponse } from 'next/server'
-import { insertSubmission, listQuestions } from '@/lib/db'
-import { getRoleValue } from '@/lib/questions'
-import { clientIp, rateLimit, tooManyRequests } from '@/lib/rateLimit'
+import { getQuestionnaireBySlug, insertSubmission, ensureSeeded } from '@/lib/db'
 import { isAllowedOrigin, readJsonBody } from '@/lib/requestGuard'
+import { clientIp, rateLimit, tooManyRequests } from '@/lib/rateLimit'
 import { validateSubmission } from '@/lib/validateSubmission'
+import { formatAnswer, type QuestionData } from '@/lib/questions'
 
 export async function POST(request: Request) {
   try {
-    if (!isAllowedOrigin(request)) {
-      return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 })
-    }
+    if (!isAllowedOrigin(request)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 })
 
     const limited = rateLimit(`submit:${clientIp(request)}`, 8, 10 * 60 * 1000)
     if (!limited.ok) {
@@ -20,29 +18,34 @@ export async function POST(request: Request) {
     }
 
     const body = await readJsonBody(request)
-    if (!body.ok) {
-      return NextResponse.json({ error: body.error }, { status: body.status })
-    }
+    if (!body.ok) return NextResponse.json({ error: body.error }, { status: body.status })
 
-    const answers =
-      body.value && typeof body.value === 'object' && !Array.isArray(body.value)
-        ? (body.value as { answers?: unknown }).answers
-        : undefined
+    const data = body.value as Record<string, unknown>
+    const slug = typeof data.slug === 'string' ? data.slug : 'appsrow'
+    const answers = data.answers as Record<string, unknown> | undefined
 
-    const questions = await listQuestions(true)
-    const result = validateSubmission(questions, answers)
+    await ensureSeeded()
+    const questionnaire = await getQuestionnaireBySlug(slug)
+    if (!questionnaire) return NextResponse.json({ error: 'Questionnaire not found.' }, { status: 404 })
+    if (questionnaire.status !== 'live') return NextResponse.json({ error: 'This questionnaire is not active.' }, { status: 400 })
 
-    if (!result.ok) {
-      return NextResponse.json({ error: result.error }, { status: 400 })
-    }
+    const allQuestions = questionnaire.sections.flatMap((s) => s.questions)
+    const result = validateSubmission(allQuestions, answers)
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 })
 
     const { payload } = result
+
+    function roleValue(role: string): string {
+      const q = allQuestions.find((x) => x.role === role)
+      return q ? formatAnswer(payload[q.id]) : ''
+    }
+
     const saved = await insertSubmission({
-      fullName: getRoleValue(questions, payload, 'full_name') || '—',
-      email: getRoleValue(questions, payload, 'email') || 'unknown@unknown',
-      companyName: getRoleValue(questions, payload, 'company') || '—',
-      relationship: getRoleValue(questions, payload, 'relationship') || null,
-      projectType: getRoleValue(questions, payload, 'project_type') || null,
+      questionnaireId: questionnaire.id,
+      name: roleValue('full_name') || '—',
+      email: roleValue('email') || 'unknown@unknown',
+      company: roleValue('company') || '—',
+      projectType: roleValue('project_type') || '',
       answers: payload,
     })
 

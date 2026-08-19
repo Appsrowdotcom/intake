@@ -1,25 +1,28 @@
-import { Questionnaire } from '@/components/Questionnaire'
-import { listQuestions } from '@/lib/db'
+import { redirect } from 'next/navigation'
+import { listQuestionnaires, ensureSeeded } from '@/lib/db'
+import { ClientQuestionnaire } from '@/components/ClientQuestionnaire'
 
 export const dynamic = 'force-dynamic'
 
 export default async function HomePage() {
   try {
-    const questions = await listQuestions(true)
+    await ensureSeeded()
+    const questionnaires = await listQuestionnaires()
+    const defaultQ = questionnaires.find((q) => q.isDefault && q.status === 'live')
 
-    if (questions.length === 0) {
+    if (!defaultQ) {
       return (
-        <div className="flex min-h-screen items-center justify-center bg-paper px-6 text-center text-muted">
-          This questionnaire has no active questions yet.
+        <div className="flex min-h-screen items-center justify-center bg-canvas px-6 text-center text-muted">
+          The questionnaire is temporarily unavailable.
         </div>
       )
     }
 
-    return <Questionnaire questions={questions} />
+    return <ClientQuestionnaire questionnaire={defaultQ} />
   } catch (error) {
-    console.error('Failed to load questions', error)
+    console.error('Failed to load questionnaire', error)
     return (
-      <div className="flex min-h-screen items-center justify-center bg-paper px-6 text-center text-muted">
+      <div className="flex min-h-screen items-center justify-center bg-canvas px-6 text-center text-muted">
         The questionnaire is temporarily unavailable.
       </div>
     )

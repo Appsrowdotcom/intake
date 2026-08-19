@@ -1,25 +1,16 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
 import './globals.css'
 
-const inter = Inter({ subsets: ['latin'] })
-
 export const metadata: Metadata = {
-  title: 'Appsrow Universal Discovery Questionnaire',
-  description: 'Tell Appsrow about your project. The form adapts to what you need.',
-  icons: {
-    icon: '/icon.svg',
-  },
+  title: 'Appsrow Discovery',
+  description: 'Appsrow Discovery — questionnaire intelligence workspace.',
+  icons: { icon: '/icon.svg' },
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className={inter.className}>{children}</body>
+      <body>{children}</body>
     </html>
   )
 }

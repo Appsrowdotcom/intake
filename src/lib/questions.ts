@@ -1,61 +1,158 @@
-export type QuestionType = 'text' | 'email' | 'url' | 'textarea' | 'single' | 'multi'
+export type QuestionType =
+  | 'email'
+  | 'short_text'
+  | 'long_text'
+  | 'single_select'
+  | 'multi_select'
+  | 'url'
+  | 'file_upload'
+  | 'file_url'
+  | 'number'
+  | 'date'
 
 export type QuestionRole = 'full_name' | 'email' | 'company' | 'relationship' | 'project_type'
 
-export type AnswerValue = string | string[]
-export type Answers = Record<string, AnswerValue>
-
-export type ShowOperator = 'eq' | 'neq' | 'in' | 'contains' | 'answered'
+export type ShowOperator =
+  | 'equals'
+  | 'not_equals'
+  | 'contains'
+  | 'not_contains'
+  | 'is_answered'
+  | 'is_not_answered'
+  | 'greater_than'
+  | 'less_than'
 
 export type ShowCondition = {
   questionId: string
   operator: ShowOperator
-  value?: string | string[]
+  value?: string
 }
 
-export type ShowRule = {
-  combinator: 'and' | 'or'
+export type ShowWhen = {
+  match: 'any' | 'all'
   conditions: ShowCondition[]
 }
 
-export type Question = {
+export type Logic = {
+  showWhen: ShowWhen
+}
+
+export type AnswerValue = string | string[]
+export type Answers = Record<string, AnswerValue>
+
+export type QuestionOption = { label: string; value: string } | string
+
+export type QuestionData = {
   id: string
-  sortOrder: number
-  kicker: string
-  title: string
-  description: string | null
-  placeholder: string | null
+  sectionId: string
   type: QuestionType
+  question: string
+  helpText: string
+  placeholder: string
   required: boolean
+  active: boolean
   options: string[]
-  showRule: ShowRule | null
-  role: QuestionRole | null
-  isActive: boolean
+  logic?: Logic
+  role?: QuestionRole | null
+  order: number
 }
 
-export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
-  text: 'Short text',
-  textarea: 'Long text',
-  email: 'Email',
-  url: 'URL',
-  single: 'Single select',
-  multi: 'Multi select',
+export type SectionData = {
+  id: string
+  title: string
+  order: number
+  collapsed?: boolean
+  questions: QuestionData[]
 }
 
-export const QUESTION_ROLES: { value: QuestionRole; label: string }[] = [
-  { value: 'full_name', label: 'Full name' },
-  { value: 'email', label: 'Email' },
-  { value: 'company', label: 'Company' },
-  { value: 'relationship', label: 'Relationship' },
-  { value: 'project_type', label: 'Project type' },
+export type ThemePreset = 'light' | 'dark' | 'editorial'
+export type HeadingScale = 'large' | 'compact'
+export type ContentWidth = 'wide' | 'focused'
+export type ProgressStyle = 'fraction' | 'minimal'
+
+export type ThemeSettings = {
+  preset: ThemePreset
+  heading: HeadingScale
+  width: ContentWidth
+  progress: ProgressStyle
+  showLogo: boolean
+}
+
+export type QuestionnaireStatus = 'draft' | 'live'
+
+export type QuestionnaireData = {
+  id: string
+  isDefault: boolean
+  name: string
+  slug: string
+  purpose: string
+  status: QuestionnaireStatus
+  createdAt: string
+  updatedAt: string
+  theme: ThemeSettings
+  sections: SectionData[]
+}
+
+export type ResponseData = {
+  id: string
+  questionnaireId: string
+  questionnaireName?: string
+  name: string
+  company: string
+  email: string
+  status: 'new' | 'reviewed' | 'incomplete'
+  clarity: number
+  submittedAt: string
+  projectType: string
+  snapshot: Record<string, string>
+  ready: string[]
+  clarify: string[]
+  answers: [string, string][]
+}
+
+export type WorkspaceSettings = {
+  name: string
+  domain: string
+  defaultTheme: ThemePreset
+}
+
+export const SUPPORTED_TYPES: QuestionType[] = [
+  'email', 'short_text', 'long_text', 'single_select', 'multi_select',
+  'url', 'file_upload', 'file_url', 'number', 'date',
 ]
 
-export const SHOW_OPERATOR_LABELS: Record<ShowOperator, string> = {
-  eq: 'is',
-  neq: 'is not',
-  in: 'is one of',
-  contains: 'includes',
-  answered: 'is answered',
+export const OPERATORS: ShowOperator[] = [
+  'equals', 'not_equals', 'contains', 'not_contains',
+  'is_answered', 'is_not_answered', 'greater_than', 'less_than',
+]
+
+export const TYPE_LABELS: Record<QuestionType, string> = {
+  email: 'Email',
+  short_text: 'Short text',
+  long_text: 'Long text',
+  single_select: 'Single select',
+  multi_select: 'Multi select',
+  url: 'URL',
+  file_upload: 'File upload',
+  file_url: 'File / URL',
+  number: 'Number',
+  date: 'Date',
+}
+
+export function isChoiceType(type: QuestionType): boolean {
+  return type === 'single_select' || type === 'multi_select'
+}
+
+export function uid(prefix = 'id'): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
+}
+
+export function slugify(value: string): string {
+  return value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+export function isValidSlug(value: string): boolean {
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)
 }
 
 export function getString(answers: Answers, id: string): string {
@@ -68,10 +165,6 @@ export function getArray(answers: Answers, id: string): string[] {
   return Array.isArray(value) ? value : []
 }
 
-export function isAnswered(question: Pick<Question, 'id'>, answers: Answers): boolean {
-  return isValueAnswered(answers[question.id])
-}
-
 export function isValueAnswered(value: AnswerValue | undefined): boolean {
   if (Array.isArray(value)) return value.length > 0
   return value !== undefined && String(value).trim() !== ''
@@ -80,34 +173,40 @@ export function isValueAnswered(value: AnswerValue | undefined): boolean {
 export function evaluateCondition(condition: ShowCondition, answers: Answers): boolean {
   const answered = isValueAnswered(answers[condition.questionId])
   const text = getString(answers, condition.questionId)
-  const list = getArray(answers, condition.questionId)
 
   switch (condition.operator) {
-    case 'answered':
+    case 'is_answered':
       return answered
-    case 'eq':
+    case 'is_not_answered':
+      return !answered
+    case 'equals':
       return answered && text === condition.value
-    case 'neq':
+    case 'not_equals':
       return answered && text !== condition.value
-    case 'in':
-      return answered && Array.isArray(condition.value) && condition.value.includes(text)
     case 'contains':
-      return typeof condition.value === 'string' && list.includes(condition.value)
+      return typeof condition.value === 'string' && text.toLowerCase().includes(condition.value.toLowerCase())
+    case 'not_contains':
+      return answered && typeof condition.value === 'string' && !text.toLowerCase().includes(condition.value.toLowerCase())
+    case 'greater_than':
+      return answered && Number(text) > Number(condition.value)
+    case 'less_than':
+      return answered && Number(text) < Number(condition.value)
     default:
       return false
   }
 }
 
-export function evaluateShowRule(rule: ShowRule | null | undefined, answers: Answers): boolean {
-  if (!rule || rule.conditions.length === 0) return true
-  if (rule.combinator === 'or') {
-    return rule.conditions.some((condition) => evaluateCondition(condition, answers))
+export function evaluateLogic(logic: Logic | undefined, answers: Answers): boolean {
+  if (!logic?.showWhen?.conditions?.length) return true
+  const { match, conditions } = logic.showWhen
+  if (match === 'any') {
+    return conditions.some((c) => evaluateCondition(c, answers))
   }
-  return rule.conditions.every((condition) => evaluateCondition(condition, answers))
+  return conditions.every((c) => evaluateCondition(c, answers))
 }
 
-export function getVisibleQuestions(questions: Question[], answers: Answers): Question[] {
-  return questions.filter((question) => question.isActive && evaluateShowRule(question.showRule, answers))
+export function getVisibleQuestions(questions: QuestionData[], answers: Answers): QuestionData[] {
+  return questions.filter((q) => q.active && evaluateLogic(q.logic, answers))
 }
 
 export function formatAnswer(value: AnswerValue | undefined): string {
@@ -116,61 +215,14 @@ export function formatAnswer(value: AnswerValue | undefined): string {
   return value
 }
 
-export function collectVisibleAnswers(questions: Question[], answers: Answers): Answers {
-  const visible = getVisibleQuestions(questions, answers)
-  const payload: Answers = {}
-
-  for (const question of visible) {
-    if (isAnswered(question, answers)) {
-      payload[question.id] = answers[question.id]
-    }
-  }
-
-  return payload
+export function normalizeOption(o: QuestionOption): string {
+  return typeof o === 'string' ? o : o.label
 }
 
-export function questionsById(questions: Question[]): Record<string, Question> {
-  return Object.fromEntries(questions.map((question) => [question.id, question]))
+export function qCount(sections: SectionData[]): number {
+  return sections.reduce((n, s) => n + s.questions.length, 0)
 }
 
-export function getRoleValue(questions: Question[], answers: Answers, role: QuestionRole): string {
-  const question = questions.find((item) => item.role === role)
-  if (!question) return ''
-  return formatAnswer(answers[question.id]).trim()
-}
-
-export function parseShowRule(value: unknown): ShowRule | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  const rule = value as Partial<ShowRule>
-  if (rule.combinator !== 'and' && rule.combinator !== 'or') return null
-  if (!Array.isArray(rule.conditions)) return null
-  const conditions = rule.conditions.filter((condition): condition is ShowCondition => {
-    if (!condition || typeof condition !== 'object') return false
-    if (typeof condition.questionId !== 'string') return false
-    return ['eq', 'neq', 'in', 'contains', 'answered'].includes(condition.operator)
-  })
-  if (conditions.length === 0) return null
-  return { combinator: rule.combinator, conditions }
-}
-
-export function parseOptions(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === 'string')
-  }
-  if (typeof value === 'string') {
-    try {
-      return parseOptions(JSON.parse(value))
-    } catch {
-      return []
-    }
-  }
-  return []
-}
-
-export function isChoiceType(type: QuestionType): boolean {
-  return type === 'single' || type === 'multi'
-}
-
-export function createQuestionId(): string {
-  return `q_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
+export function logicCount(sections: SectionData[]): number {
+  return sections.reduce((n, s) => n + s.questions.filter((q) => q.logic?.showWhen?.conditions?.length).length, 0)
 }

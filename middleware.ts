@@ -12,12 +12,23 @@ export async function middleware(request: NextRequest) {
     return response
   }
 
-  if (pathname.startsWith('/api/adl')) {
+  if (pathname.startsWith('/api/adl') || pathname.startsWith('/adl')) {
+    if (pathname === '/adl' && request.method === 'GET') {
+      return response
+    }
+
     const token = request.cookies.get(getAdlCookieName())?.value
     if (!(await verifyAdlToken(token))) {
-      const unauthorized = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-      applySecurityHeaders(unauthorized.headers)
-      return unauthorized
+      if (pathname.startsWith('/api/')) {
+        const unauthorized = NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+        applySecurityHeaders(unauthorized.headers)
+        return unauthorized
+      }
+      const loginUrl = request.nextUrl.clone()
+      loginUrl.pathname = '/adl'
+      const redirect = NextResponse.redirect(loginUrl)
+      applySecurityHeaders(redirect.headers)
+      return redirect
     }
   }
 
@@ -25,5 +36,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/adl', '/adl/:path*', '/api/:path*', '/'],
+  matcher: ['/adl', '/adl/:path*', '/api/:path*', '/', '/q/:path*'],
 }

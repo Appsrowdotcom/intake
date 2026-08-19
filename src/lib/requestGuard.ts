@@ -1,4 +1,4 @@
-const MAX_JSON_BYTES = 80_000
+const MAX_JSON_BYTES = 500_000
 
 export function isAllowedOrigin(request: Request): boolean {
   const origin = request.headers.get('origin')

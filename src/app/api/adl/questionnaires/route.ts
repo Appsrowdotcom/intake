@@ -116,13 +116,17 @@ export async function POST(request: Request) {
       slug: 'q/' + slug,
       purpose: purpose || 'Imported questionnaire.',
       status: 'draft',
-      theme: data.theme as Record<string, unknown> | undefined,
+      theme: typeof data.theme === 'object' && data.theme ? data.theme as Partial<Record<string, unknown>> :
+        typeof data.theme === 'string' ? { preset: data.theme } :
+        nested && typeof nested.theme === 'string' ? { preset: nested.theme } :
+        undefined,
       sections,
     })
 
     return NextResponse.json({ questionnaire })
   } catch (error) {
-    console.error('Failed to create questionnaire', error)
-    return NextResponse.json({ error: 'Could not create questionnaire.' }, { status: 500 })
+    const msg = error instanceof Error ? error.message : String(error)
+    console.error('Failed to create questionnaire', msg, error)
+    return NextResponse.json({ error: `Could not create questionnaire: ${msg}` }, { status: 500 })
   }
 }

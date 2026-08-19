@@ -146,29 +146,32 @@ export async function createQuestionnaire(input: {
     showLogo: input.theme?.showLogo !== false,
   }
 
-  await db.query(
-    `INSERT INTO questionnaires (id, is_default, name, slug, purpose, status, theme_preset, theme_heading, theme_width, theme_progress, theme_show_logo)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-    [id, Boolean(input.isDefault), input.name, input.slug, input.purpose, input.status || 'draft',
-      theme.preset, theme.heading, theme.width, theme.progress, theme.showLogo]
-  )
+  const isDefault = Boolean(input.isDefault)
+  const status = input.status || 'draft'
+  await db`
+    INSERT INTO questionnaires (id, is_default, name, slug, purpose, status, theme_preset, theme_heading, theme_width, theme_progress, theme_show_logo)
+    VALUES (${id}, ${isDefault}, ${input.name}, ${input.slug}, ${input.purpose}, ${status},
+      ${theme.preset}, ${theme.heading}, ${theme.width}, ${theme.progress}, ${theme.showLogo})
+  `
 
   const sections = input.sections || []
   for (let si = 0; si < sections.length; si++) {
     const s = sections[si]
-    await db.query(
-      `INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES ($1,$2,$3,$4)`,
-      [s.id, id, s.title, si + 1]
-    )
+    const sortOrder = si + 1
+    await db`INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES (${s.id}, ${id}, ${s.title}, ${sortOrder})`
     for (let qi = 0; qi < s.questions.length; qi++) {
       const q = s.questions[qi]
-      await db.query(
-        `INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)`,
-        [q.id, s.id, qi + 1, q.question, q.helpText || '', q.placeholder || '', q.type,
-          q.required, q.active !== false, JSON.stringify(q.options || []),
-          q.logic ? JSON.stringify(q.logic) : null, q.role || null]
-      )
+      const qOrder = qi + 1
+      const helpText = q.helpText || ''
+      const placeholder = q.placeholder || ''
+      const optionsJson = JSON.stringify(q.options || [])
+      const logicJson = q.logic ? JSON.stringify(q.logic) : null
+      const role = q.role || null
+      await db`
+        INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
+        VALUES (${q.id}, ${s.id}, ${qOrder}, ${q.question}, ${helpText}, ${placeholder}, ${q.type},
+          ${q.required}, ${q.active !== false}, ${optionsJson}::jsonb, ${logicJson}::jsonb, ${role})
+      `
     }
   }
 
@@ -193,12 +196,12 @@ export async function updateQuestionnaire(id: string, input: {
   const status = input.status ?? existing.status
   const theme = { ...existing.theme, ...input.theme }
 
-  await db.query(
-    `UPDATE questionnaires SET name=$2, slug=$3, purpose=$4, status=$5,
-     theme_preset=$6, theme_heading=$7, theme_width=$8, theme_progress=$9, theme_show_logo=$10,
-     updated_at=now() WHERE id=$1`,
-    [id, name, slug, purpose, status, theme.preset, theme.heading, theme.width, theme.progress, theme.showLogo]
-  )
+  await db`
+    UPDATE questionnaires SET name=${name}, slug=${slug}, purpose=${purpose}, status=${status},
+    theme_preset=${theme.preset}, theme_heading=${theme.heading}, theme_width=${theme.width},
+    theme_progress=${theme.progress}, theme_show_logo=${theme.showLogo}, updated_at=now()
+    WHERE id=${id}
+  `
 
   return getQuestionnaire(id)
 }
@@ -217,10 +220,7 @@ export async function addSection(questionnaireId: string, title: string): Promis
   const id = `section_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`
   const maxRows = await db`SELECT COALESCE(MAX(sort_order),0)::int AS max FROM sections WHERE questionnaire_id = ${questionnaireId}`
   const order = Number(maxRows[0]?.max ?? 0) + 1
-  await db.query(
-    `INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES ($1,$2,$3,$4)`,
-    [id, questionnaireId, title, order]
-  )
+  await db`INSERT INTO sections (id, questionnaire_id, title, sort_order) VALUES (${id}, ${questionnaireId}, ${title}, ${order})`
   await db`UPDATE questionnaires SET updated_at = now() WHERE id = ${questionnaireId}`
   return { id, title, order, questions: [] }
 }
@@ -266,13 +266,20 @@ export async function addQuestion(sectionId: string, data: Partial<QuestionData>
   const maxRows = await db`SELECT COALESCE(MAX(sort_order),0)::int AS max FROM questions WHERE section_id = ${sectionId}`
   const order = Number(maxRows[0]?.max ?? 0) + 1
 
-  await db.query(
-    `INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,$12)`,
-    [id, sectionId, order, data.question || 'Untitled question', data.helpText || '', data.placeholder || '',
-      data.type || 'short_text', data.required ?? false, data.active !== false,
-      JSON.stringify(data.options || []), data.logic ? JSON.stringify(data.logic) : null, data.role || null]
-  )
+  const qText = data.question || 'Untitled question'
+  const qHelp = data.helpText || ''
+  const qPlaceholder = data.placeholder || ''
+  const qType = data.type || 'short_text'
+  const qRequired = data.required ?? false
+  const qActive = data.active !== false
+  const qOptions = JSON.stringify(data.options || [])
+  const qLogic = data.logic ? JSON.stringify(data.logic) : null
+  const qRole = data.role || null
+  await db`
+    INSERT INTO questions (id, section_id, sort_order, question, help_text, placeholder, type, required, active, options, logic, role)
+    VALUES (${id}, ${sectionId}, ${order}, ${qText}, ${qHelp}, ${qPlaceholder}, ${qType},
+      ${qRequired}, ${qActive}, ${qOptions}::jsonb, ${qLogic}::jsonb, ${qRole})
+  `
 
   // update questionnaire timestamp
   const sectionRows = await db`SELECT questionnaire_id FROM sections WHERE id = ${sectionId} LIMIT 1`
@@ -304,12 +311,15 @@ export async function updateQuestion(id: string, data: Partial<QuestionData>): P
     role: data.role !== undefined ? data.role : q.role,
   }
 
-  await db.query(
-    `UPDATE questions SET question=$2, help_text=$3, placeholder=$4, type=$5, required=$6, active=$7,
-     options=$8::jsonb, logic=$9::jsonb, role=$10 WHERE id=$1`,
-    [id, updated.question, updated.helpText, updated.placeholder, updated.type, updated.required, updated.active,
-      JSON.stringify(updated.options), updated.logic ? JSON.stringify(updated.logic) : null, updated.role || null]
-  )
+  const uOptions = JSON.stringify(updated.options)
+  const uLogic = updated.logic ? JSON.stringify(updated.logic) : null
+  const uRole = updated.role || null
+  await db`
+    UPDATE questions SET question=${updated.question}, help_text=${updated.helpText}, placeholder=${updated.placeholder},
+    type=${updated.type}, required=${updated.required}, active=${updated.active},
+    options=${uOptions}::jsonb, logic=${uLogic}::jsonb, role=${uRole}
+    WHERE id=${id}
+  `
 
   return { ...q, ...updated }
 }
@@ -399,13 +409,17 @@ export async function insertSubmission(input: {
   clarity?: number
 }): Promise<{ id: string }> {
   const db = getDb()
-  const rows = await db.query(
-    `INSERT INTO submissions (questionnaire_id, name, email, company, project_type, answers, snapshot, ready, clarify, clarity)
-     VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10) RETURNING id`,
-    [input.questionnaireId, input.name, input.email, input.company, input.projectType,
-      JSON.stringify(input.answers), JSON.stringify(input.snapshot || {}),
-      JSON.stringify(input.ready || []), JSON.stringify(input.clarify || []), input.clarity || 0]
-  )
+  const sAnswers = JSON.stringify(input.answers)
+  const sSnapshot = JSON.stringify(input.snapshot || {})
+  const sReady = JSON.stringify(input.ready || [])
+  const sClarify = JSON.stringify(input.clarify || [])
+  const sClarity = input.clarity || 0
+  const rows = await db`
+    INSERT INTO submissions (questionnaire_id, name, email, company, project_type, answers, snapshot, ready, clarify, clarity)
+    VALUES (${input.questionnaireId}, ${input.name}, ${input.email}, ${input.company}, ${input.projectType},
+      ${sAnswers}::jsonb, ${sSnapshot}::jsonb, ${sReady}::jsonb, ${sClarify}::jsonb, ${sClarity})
+    RETURNING id
+  `
   return { id: String(rows[0].id) }
 }
 

@@ -173,6 +173,19 @@ export function AdminWorkspace({
     } catch (err) { showError(err) }
   }
 
+  async function handleDeleteQuestionnaire(q: QuestionnaireData) {
+    if (q.isDefault) { showToast('Cannot delete the default questionnaire.'); return }
+    if (!confirm(`Delete "${q.name}"? This will also remove all its sections, questions, and responses. This cannot be undone.`)) return
+    try {
+      const res = await fetch(`/api/adl/questionnaires/${q.id}`, { method: 'DELETE' })
+      if (!res.ok) { const d = await res.json().catch(() => ({})) as { error?: string }; showToast(d.error || 'Failed to delete.'); return }
+      setQuestionnaires((prev) => prev.filter((x) => x.id !== q.id))
+      setResponses((prev) => prev.filter((r) => r.questionnaireId !== q.id))
+      goPage('questionnaires')
+      showToast('Questionnaire deleted')
+    } catch (err) { showError(err) }
+  }
+
   async function toggleResponseStatus(r: ResponseData) {
     try {
       const newStatus = r.status === 'reviewed' ? 'new' : 'reviewed'
@@ -358,6 +371,9 @@ export function AdminWorkspace({
                 <button className="btn btn-red btn-sm" onClick={() => toggleStatus(currentQ)}>
                   {currentQ.status === 'live' ? 'Unpublish' : 'Publish'}
                 </button>
+                {!currentQ.isDefault && (
+                  <button className="btn btn-danger btn-sm" onClick={() => handleDeleteQuestionnaire(currentQ)}>Delete</button>
+                )}
               </div>
             </div>
 

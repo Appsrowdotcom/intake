@@ -13,6 +13,15 @@ import type {
   ThemePreset,
   ShowCondition,
 } from './questions'
+import {
+  buildSnapshot,
+  computeClarity,
+  extractContact,
+  isPlaceholderValue,
+  labeledAnswers,
+  parseStoredAnswers,
+  responseTitle,
+} from './contactFields'
 
 let sql: NeonQueryFunction<false, false> | null = null
 
@@ -40,20 +49,29 @@ function isSafeId(id: string): boolean {
 
 export async function getWorkspace(): Promise<WorkspaceSettings> {
   const db = getDb()
-  const rows = await db`SELECT name, domain, default_theme FROM workspace WHERE id = 1`
-  if (!rows[0]) return { name: 'Appsrow Discovery', domain: 'discover.appsrow.com', defaultTheme: 'light' }
+  const rows = await db`SELECT name, domain, default_theme, admin_email, notify_on_submit FROM workspace WHERE id = 1`
+  if (!rows[0]) {
+    return { name: 'Appsrow Discovery', domain: 'discover.appsrow.com', defaultTheme: 'light', adminEmail: '', notifyOnSubmit: true }
+  }
   const r = rows[0] as Record<string, unknown>
   return {
     name: String(r.name),
     domain: String(r.domain),
     defaultTheme: (r.default_theme as ThemePreset) || 'light',
+    adminEmail: String(r.admin_email || ''),
+    notifyOnSubmit: r.notify_on_submit !== false,
   }
 }
 
 export async function updateWorkspace(input: WorkspaceSettings): Promise<WorkspaceSettings> {
   const db = getDb()
   await db`
-    UPDATE workspace SET name = ${input.name}, domain = ${input.domain}, default_theme = ${input.defaultTheme}
+    UPDATE workspace SET
+      name = ${input.name},
+      domain = ${input.domain},
+      default_theme = ${input.defaultTheme},
+      admin_email = ${input.adminEmail || ''},
+      notify_on_submit = ${input.notifyOnSubmit !== false}
     WHERE id = 1
   `
   return input
@@ -147,7 +165,10 @@ export async function createQuestionnaire(input: {
   }
 
   const isDefault = Boolean(input.isDefault)
-  const status = input.status || 'draft'
+  const status = isDefault ? 'live' : (input.status || 'draft')
+  if (isDefault) {
+    await db`UPDATE questionnaires SET is_default = false WHERE is_default = true`
+  }
   await db`
     INSERT INTO questionnaires (id, is_default, name, slug, purpose, status, theme_preset, theme_heading, theme_width, theme_progress, theme_show_logo)
     VALUES (${id}, ${isDefault}, ${input.name}, ${input.slug}, ${input.purpose}, ${status},
@@ -183,6 +204,7 @@ export async function updateQuestionnaire(id: string, input: {
   slug?: string
   purpose?: string
   status?: QuestionnaireStatus
+  isDefault?: boolean
   theme?: Partial<ThemeSettings>
 }): Promise<QuestionnaireData | null> {
   if (!isSafeId(id)) return null
@@ -193,11 +215,18 @@ export async function updateQuestionnaire(id: string, input: {
   const name = input.name ?? existing.name
   const slug = input.slug ?? existing.slug
   const purpose = input.purpose ?? existing.purpose
-  const status = input.status ?? existing.status
+  const makeDefault = input.isDefault === true
+  const status = makeDefault ? 'live' : (input.status ?? existing.status)
   const theme = { ...existing.theme, ...input.theme }
+  const isDefault = makeDefault ? true : input.isDefault === false ? false : existing.isDefault
+
+  if (makeDefault) {
+    await db`UPDATE questionnaires SET is_default = false WHERE id <> ${id}`
+  }
 
   await db`
     UPDATE questionnaires SET name=${name}, slug=${slug}, purpose=${purpose}, status=${status},
+    is_default=${isDefault},
     theme_preset=${theme.preset}, theme_heading=${theme.heading}, theme_width=${theme.width},
     theme_progress=${theme.progress}, theme_show_logo=${theme.showLogo}, updated_at=now()
     WHERE id=${id}
@@ -333,6 +362,27 @@ export async function deleteQuestion(id: string): Promise<boolean> {
 
 // --- Submissions (Responses) ---
 
+type QuestionLookup = Map<string, QuestionData[]>
+
+async function loadQuestionsByQuestionnaire(): Promise<QuestionLookup> {
+  const db = getDb()
+  const rows = await db`
+    SELECT q.id, q.section_id, q.sort_order, q.question, q.help_text, q.placeholder, q.type,
+           q.required, q.active, q.options, q.logic, q.role, s.questionnaire_id
+    FROM questions q
+    JOIN sections s ON s.id = q.section_id
+    ORDER BY q.sort_order ASC
+  ` as Record<string, unknown>[]
+
+  const lookup: QuestionLookup = new Map()
+  for (const row of rows) {
+    const qid = String(row.questionnaire_id)
+    if (!lookup.has(qid)) lookup.set(qid, [])
+    lookup.get(qid)!.push(mapQuestion(row))
+  }
+  return lookup
+}
+
 export async function listResponses(questionnaireId?: string): Promise<ResponseData[]> {
   const db = getDb()
   let rows: Record<string, unknown>[]
@@ -350,23 +400,37 @@ export async function listResponses(questionnaireId?: string): Promise<ResponseD
       ORDER BY s.created_at DESC
     ` as Record<string, unknown>[]
   }
-  return rows.map(mapResponse)
+  const questions = await loadQuestionsByQuestionnaire()
+  return rows.map((row) => mapResponse(row, questions.get(String(row.questionnaire_id)) || []))
 }
 
-function mapResponse(r: Record<string, unknown>): ResponseData {
-  const answers = Array.isArray(r.answers) ? r.answers as [string, string][] : Object.entries(r.answers || {}).map(([k, v]) => [k, String(v)] as [string, string])
+function mapResponse(r: Record<string, unknown>, questions: QuestionData[] = []): ResponseData {
+  const stored = parseStoredAnswers(r.answers)
+  const contact = extractContact(questions, stored)
+  const name = isPlaceholderValue(String(r.name || '')) ? contact.name : String(r.name)
+  const email = isPlaceholderValue(String(r.email || '')) ? contact.email : String(r.email)
+  const company = isPlaceholderValue(String(r.company || '')) ? contact.company : String(r.company)
+  const projectType = String(r.project_type || '') || contact.projectType
+  const answers = labeledAnswers(questions, stored)
+  const snapshot = (r.snapshot && typeof r.snapshot === 'object' && !Array.isArray(r.snapshot)
+    ? r.snapshot
+    : {}) as Record<string, string>
+  const snapshotHasData = Object.values(snapshot).some((value) => !isPlaceholderValue(String(value)))
+  const hydratedSnapshot = snapshotHasData ? snapshot : buildSnapshot({ name, email, company, projectType })
+
   return {
     id: String(r.id),
     questionnaireId: String(r.questionnaire_id),
     questionnaireName: r.questionnaire_name ? String(r.questionnaire_name) : undefined,
-    name: String(r.name),
-    company: String(r.company),
-    email: String(r.email),
+    name: responseTitle({ name, email, company, projectType }),
+    company,
+    email,
     status: (r.status as 'new' | 'reviewed' | 'incomplete') || 'new',
-    clarity: Number(r.clarity) || 0,
+    clarity: Number(r.clarity) || computeClarity(questions, stored),
     submittedAt: formatTs(r.created_at),
-    projectType: String(r.project_type),
-    snapshot: (r.snapshot && typeof r.snapshot === 'object' ? r.snapshot : {}) as Record<string, string>,
+    createdAt: r.created_at ? new Date(String(r.created_at)).toISOString() : '',
+    projectType,
+    snapshot: hydratedSnapshot,
     ready: Array.isArray(r.ready) ? r.ready as string[] : [],
     clarify: Array.isArray(r.clarify) ? r.clarify as string[] : [],
     answers,
@@ -393,7 +457,8 @@ export async function getResponse(id: string): Promise<ResponseData | null> {
     WHERE s.id = ${id} LIMIT 1
   ` as Record<string, unknown>[]
   if (!rows[0]) return null
-  return mapResponse(rows[0])
+  const questions = await loadQuestionsByQuestionnaire()
+  return mapResponse(rows[0], questions.get(String(rows[0].questionnaire_id)) || [])
 }
 
 export async function insertSubmission(input: {
@@ -509,15 +574,11 @@ async function runMigrations(db: NeonQueryFunction<false, false>): Promise<void>
     )
   `
   await db`INSERT INTO workspace (id) VALUES (1) ON CONFLICT DO NOTHING`
+  await db`ALTER TABLE workspace ADD COLUMN IF NOT EXISTS admin_email TEXT NOT NULL DEFAULT ''`
+  await db`ALTER TABLE workspace ADD COLUMN IF NOT EXISTS notify_on_submit BOOLEAN NOT NULL DEFAULT true`
+  await db`ALTER TABLE questions ADD COLUMN IF NOT EXISTS role TEXT`
+  await db`ALTER TABLE submissions ADD COLUMN IF NOT EXISTS questionnaire_id TEXT NOT NULL DEFAULT ''`
 
-  // Add questionnaire_id column if missing (migration from older schema)
-  const colCheck = await db`
-    SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'submissions' AND column_name = 'questionnaire_id'
-  `
-  if (!colCheck.length) {
-    await db`ALTER TABLE submissions ADD COLUMN questionnaire_id TEXT DEFAULT '' NOT NULL`
-  }
 
   // Ensure indexes exist
   await db`CREATE INDEX IF NOT EXISTS sections_questionnaire_idx ON sections (questionnaire_id, sort_order)`

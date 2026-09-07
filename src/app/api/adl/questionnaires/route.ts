@@ -115,7 +115,8 @@ export async function POST(request: Request) {
       name,
       slug: 'q/' + slug,
       purpose: purpose || 'Imported questionnaire.',
-      status: 'draft',
+      status: data.isDefault === true ? 'live' : 'draft',
+      isDefault: data.isDefault === true,
       theme: typeof data.theme === 'object' && data.theme ? data.theme as Partial<Record<string, unknown>> :
         typeof data.theme === 'string' ? { preset: data.theme } :
         nested && typeof nested.theme === 'string' ? { preset: nested.theme } :

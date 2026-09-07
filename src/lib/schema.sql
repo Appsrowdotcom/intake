@@ -64,7 +64,9 @@ CREATE TABLE IF NOT EXISTS workspace (
   id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   name TEXT NOT NULL DEFAULT 'Appsrow Discovery',
   domain TEXT NOT NULL DEFAULT 'discover.appsrow.com',
-  default_theme TEXT NOT NULL DEFAULT 'light'
+  default_theme TEXT NOT NULL DEFAULT 'light',
+  admin_email TEXT NOT NULL DEFAULT '',
+  notify_on_submit BOOLEAN NOT NULL DEFAULT true
 );
 
 INSERT INTO workspace (id) VALUES (1) ON CONFLICT DO NOTHING;

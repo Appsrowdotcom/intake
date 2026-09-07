@@ -103,6 +103,7 @@ export type ResponseData = {
   status: 'new' | 'reviewed' | 'incomplete'
   clarity: number
   submittedAt: string
+  createdAt: string
   projectType: string
   snapshot: Record<string, string>
   ready: string[]
@@ -114,6 +115,8 @@ export type WorkspaceSettings = {
   name: string
   domain: string
   defaultTheme: ThemePreset
+  adminEmail: string
+  notifyOnSubmit: boolean
 }
 
 export const SUPPORTED_TYPES: QuestionType[] = [
@@ -137,6 +140,16 @@ export const TYPE_LABELS: Record<QuestionType, string> = {
   file_url: 'File / URL',
   number: 'Number',
   date: 'Date',
+}
+
+export const QUESTION_ROLES: QuestionRole[] = ['full_name', 'email', 'company', 'project_type', 'relationship']
+
+export const ROLE_LABELS: Record<QuestionRole, string> = {
+  full_name: 'Full name',
+  email: 'Email',
+  company: 'Company',
+  project_type: 'Project type',
+  relationship: 'Relationship',
 }
 
 export function isChoiceType(type: QuestionType): boolean {

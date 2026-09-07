@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server'
-import { getWorkspace, updateWorkspace } from '@/lib/db'
+import { getWorkspace, updateWorkspace, ensureSeeded } from '@/lib/db'
 import { isAllowedOrigin, readJsonBody } from '@/lib/requestGuard'
 
 export async function GET() {
   try {
+    await ensureSeeded()
     const workspace = await getWorkspace()
     return NextResponse.json({ workspace })
   } catch (error) {
@@ -17,6 +18,7 @@ export async function PUT(request: Request) {
     if (!isAllowedOrigin(request)) return NextResponse.json({ error: 'Invalid origin.' }, { status: 403 })
     const body = await readJsonBody(request)
     if (!body.ok) return NextResponse.json({ error: body.error }, { status: body.status })
+    await ensureSeeded()
     const data = body.value as Record<string, unknown>
     const name = typeof data.name === 'string' ? data.name.trim() : ''
     const domain = typeof data.domain === 'string' ? data.domain.trim() : ''
@@ -25,6 +27,8 @@ export async function PUT(request: Request) {
       name,
       domain,
       defaultTheme: (data.defaultTheme as 'light' | 'dark' | 'editorial') || 'light',
+      adminEmail: typeof data.adminEmail === 'string' ? data.adminEmail.trim() : '',
+      notifyOnSubmit: data.notifyOnSubmit !== false,
     })
     return NextResponse.json({ workspace })
   } catch (error) {

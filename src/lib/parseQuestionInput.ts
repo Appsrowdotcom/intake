@@ -1,7 +1,5 @@
 import type { QuestionType, QuestionRole, QuestionData } from './questions'
-import { SUPPORTED_TYPES } from './questions'
-
-const ROLES: QuestionRole[] = ['full_name', 'email', 'company', 'relationship', 'project_type']
+import { SUPPORTED_TYPES, QUESTION_ROLES } from './questions'
 
 function clip(value: string, max: number): string {
   return value.slice(0, max)
@@ -24,7 +22,7 @@ export function parseQuestionInput(body: unknown): Partial<QuestionData> & { typ
 
   let role: QuestionRole | null = null
   if (data.role) {
-    if (typeof data.role !== 'string' || !ROLES.includes(data.role as QuestionRole)) {
+    if (typeof data.role !== 'string' || !QUESTION_ROLES.includes(data.role as QuestionRole)) {
       return { error: 'Choose a valid role.' }
     }
     role = data.role as QuestionRole

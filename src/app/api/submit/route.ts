@@ -3,7 +3,8 @@ import { getQuestionnaireBySlug, insertSubmission, ensureSeeded } from '@/lib/db
 import { isAllowedOrigin, readJsonBody } from '@/lib/requestGuard'
 import { clientIp, rateLimit, tooManyRequests } from '@/lib/rateLimit'
 import { validateSubmission } from '@/lib/validateSubmission'
-import { formatAnswer, type QuestionData } from '@/lib/questions'
+import { buildSnapshot, computeClarity, extractContact, labeledAnswers } from '@/lib/contactFields'
+import { notifyAdminNewEntry } from '@/lib/notifyAdmin'
 
 export async function POST(request: Request) {
   try {
@@ -34,20 +35,32 @@ export async function POST(request: Request) {
     if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 })
 
     const { payload } = result
-
-    function roleValue(role: string): string {
-      const q = allQuestions.find((x) => x.role === role)
-      return q ? formatAnswer(payload[q.id]) : ''
-    }
+    const contact = extractContact(allQuestions, payload)
+    const labeled = labeledAnswers(allQuestions, payload)
 
     const saved = await insertSubmission({
       questionnaireId: questionnaire.id,
-      name: roleValue('full_name') || '—',
-      email: roleValue('email') || 'unknown@unknown',
-      company: roleValue('company') || '—',
-      projectType: roleValue('project_type') || '',
+      name: contact.name || '—',
+      email: contact.email || 'unknown@unknown',
+      company: contact.company || '—',
+      projectType: contact.projectType || '',
       answers: payload,
+      snapshot: buildSnapshot(contact),
+      clarity: computeClarity(allQuestions, payload),
     })
+
+    try {
+      await notifyAdminNewEntry({
+        name: contact.name,
+        email: contact.email,
+        company: contact.company,
+        projectType: contact.projectType,
+        questionnaireName: questionnaire.name,
+        answers: labeled,
+      })
+    } catch (error) {
+      console.error('Failed to send admin notification', error)
+    }
 
     return NextResponse.json({ id: saved.id })
   } catch (error) {

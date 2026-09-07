@@ -114,19 +114,35 @@ export function ClientQuestionnaire({ questionnaire }: { questionnaire: Question
 
             <div className="mt-8">
               {(current.type === 'single_select' || current.type === 'multi_select') ? (
-                <div className={`grid border-t ${optionBorder}`}>
+                <div
+                  className="grid gap-2"
+                  role={current.type === 'multi_select' ? 'group' : 'radiogroup'}
+                  aria-label={current.question}
+                >
                   {(current.options || []).map((opt) => {
                     const selected = current.type === 'multi_select'
                       ? Array.isArray(answers[current.id]) && (answers[current.id] as string[]).includes(opt)
                       : answers[current.id] === opt
+                    const isMulti = current.type === 'multi_select'
                     return (
                       <button
                         key={opt}
-                        onClick={() => current.type === 'multi_select' ? toggleMulti(current.id, opt) : setAnswer(current.id, opt)}
-                        className={`flex items-center justify-between gap-4 border-b ${optionBorder} bg-transparent px-1 py-4 text-left text-inherit hover:px-2 hover:text-red`}
+                        type="button"
+                        role={isMulti ? 'checkbox' : 'radio'}
+                        aria-checked={selected}
+                        onClick={() => isMulti ? toggleMulti(current.id, opt) : setAnswer(current.id, opt)}
+                        className={`choice-option ${selected ? 'selected' : ''} ${isDark ? 'dark' : ''}`}
                       >
-                        <span className={selected ? 'font-semibold text-red' : ''}>{opt}</span>
-                        <span>→</span>
+                        <span className={`choice-mark ${isMulti ? 'square' : 'circle'} ${selected ? 'on' : ''}`}>
+                          {selected ? (isMulti ? (
+                            <svg viewBox="0 0 16 16" className="h-3.5 w-3.5" aria-hidden="true">
+                              <path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" strokeWidth="2" />
+                            </svg>
+                          ) : (
+                            <span className="h-2 w-2 rounded-full bg-white" />
+                          )) : null}
+                        </span>
+                        <span className="min-w-0 flex-1 text-[15px] leading-snug md:text-base">{opt}</span>
                       </button>
                     )
                   })}

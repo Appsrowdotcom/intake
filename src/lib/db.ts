@@ -24,6 +24,7 @@ import {
 } from './contactFields'
 
 let sql: NeonQueryFunction<false, false> | null = null
+let cachedDatabaseUrl: string | null = null
 
 function normalizeDatabaseUrl(value: string): string {
   let url = value.trim().replace(/^["']|["']$/g, '')
@@ -33,11 +34,29 @@ function normalizeDatabaseUrl(value: string): string {
   return url
 }
 
+function isDbConnectError(error: unknown): boolean {
+  const parts: string[] = []
+  if (error instanceof Error) {
+    parts.push(error.name, error.message)
+    if (error.cause instanceof Error) parts.push(error.cause.message)
+  } else {
+    parts.push(String(error))
+  }
+  return /fetch failed|connecting to database|ECONNRESET|ETIMEDOUT|ENOTFOUND|Connect Timeout|unavailable/i.test(parts.join(' '))
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 export function getDb() {
-  if (sql) return sql
   const databaseUrl = process.env.DATABASE_URL
-  if (!databaseUrl) throw new Error('Missing DATABASE_URL.')
-  sql = neon(normalizeDatabaseUrl(databaseUrl))
+  if (!databaseUrl) throw new Error('Missing DATABASE_URL. Add it to .env.local and restart the app.')
+  const normalized = normalizeDatabaseUrl(databaseUrl)
+  if (!sql || cachedDatabaseUrl !== normalized) {
+    sql = neon(normalized)
+    cachedDatabaseUrl = normalized
+  }
   return sql
 }
 
@@ -500,11 +519,25 @@ export async function updateResponseStatus(id: string, status: 'new' | 'reviewed
 // --- Seed ---
 
 export async function ensureSeeded(): Promise<void> {
-  const db = getDb()
-  await runMigrations(db)
-  const countRows = await db`SELECT COUNT(*)::int AS count FROM questionnaires`
-  if (Number(countRows[0]?.count ?? 0) > 0) return
-  await seedUniversalQuestionnaire()
+  let lastError: unknown
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const db = getDb()
+      await runMigrations(db)
+      const countRows = await db`SELECT COUNT(*)::int AS count FROM questionnaires`
+      if (Number(countRows[0]?.count ?? 0) === 0) await seedUniversalQuestionnaire()
+      return
+    } catch (error) {
+      lastError = error
+      if (!isDbConnectError(error) || attempt === 3) break
+      await sleep(700 * attempt)
+    }
+  }
+
+  const detail = lastError instanceof Error ? lastError.message : String(lastError)
+  throw new Error(
+    `Could not reach the Neon database. Wake the project in the Neon dashboard if it is paused, check your internet, and confirm DATABASE_URL in .env.local. (${detail})`
+  )
 }
 
 async function runMigrations(db: NeonQueryFunction<false, false>): Promise<void> {
